@@ -47,6 +47,15 @@ import {
   type Forms,
 } from "../compose.js";
 import { renderForm } from "./compose-ui.js";
+import {
+  parseLayout,
+  viewOf,
+  WHOLE_MODEL,
+  withPositions,
+  writeLayout,
+  type Layout,
+  type Point,
+} from "../layout.js";
 import { join, readTrace, resolve, type Selection, type SelectionId, type TraceEvent } from "../selection.js";
 
 interface Sources {
@@ -101,6 +110,8 @@ let cursor = 0;
 let sourceOf = new Map<string, string>();
 /** Errors open the panel once, by themselves. A warning count never does. */
 let announcedErrors = false;
+/** Kept so a problem found later — a failed layout write — can be reported beside the rest. */
+let lastDiagnostics: readonly Diagnostic[] = [];
 /** The trace, if one was given. Optional by design: the graph is worth drawing before anything has run. */
 /** Every run the file holds. A file routinely holds several, and they cannot be played as one. */
 let runs: readonly Run[] = [];
@@ -108,6 +119,8 @@ let runs: readonly Run[] = [];
 let trace: readonly TraceEvent[] = [];
 let player: Player | undefined;
 let sequence: SequenceView | undefined;
+let layout: Layout = {};
+let layoutProblems: readonly string[] = [];
 let forms: Forms = {};
 let formProblems: readonly string[] = [];
 /** The form being filled in, and the payload being built. Reset when the declaration changes. */
@@ -653,6 +666,42 @@ function whereIs(d: Diagnostic): string {
   return `${name}:${line}:${col}`;
 }
 
+// ---- layout ----------------------------------------------------------------
+
+/** Which view's positions are being used: the lens, or the whole model through no lens. */
+const layoutView = (): string => (lensPicker.value === "" ? WHOLE_MODEL : lensPicker.value);
+
+/**
+ * Remembers where a node was dropped.
+ *
+ * The whole file is sent, because the page holds the whole file: it read it, changed some positions and
+ * kept everything else — which is the only way a stale entry survives a drag (`20-ir.md` 6.2).
+ *
+ * A failed write is **said**, not swallowed. A drag that silently does not persist is worse than one that
+ * was never offered.
+ */
+async function remember(positions: Readonly<Record<SelectionId, Point>>): Promise<void> {
+  layout = withPositions(layout, layoutView(), positions);
+  view?.setSaved(viewOf(layout, layoutView()).nodes);
+  try {
+    const response = await fetch("/layout.json", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: writeLayout(layout),
+    });
+    if (!response.ok) {
+      layoutProblems = [`could not save the layout: ${response.status}`];
+      report(lastDiagnostics, graph?.unresolved ?? []);
+    } else if (layoutProblems.length > 0) {
+      layoutProblems = [];
+      report(lastDiagnostics, graph?.unresolved ?? []);
+    }
+  } catch (cause) {
+    layoutProblems = [`could not save the layout: ${cause instanceof Error ? cause.message : ""}`];
+    report(lastDiagnostics, graph?.unresolved ?? []);
+  }
+}
+
 /**
  * Diagnostics are shown, never swallowed: a warning is usually the interesting part of a model.
  *
@@ -661,6 +710,7 @@ function whereIs(d: Diagnostic): string {
  * have learned to ignore is worse than one you have to click for.
  */
 function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[]): void {
+  lastDiagnostics = diagnostics;
   const errors = diagnostics.filter((d) => d.severity === "error");
   const warnings = diagnostics.filter((d) => d.severity === "warning");
 
@@ -670,6 +720,7 @@ function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[
     ...lensProblems.map((p) => `views.json  ${p}`),
     ...traceProblems.map((p) => `trace  ${p}`),
     ...formProblems.map((p) => `forms.json  ${p}`),
+    ...layoutProblems.map((p) => `layout  ${p}`),
     ...warnings.map((d) => `warning  ${whereIs(d)}  ${d.code}: ${d.message}`),
   ];
   problemsText.textContent = lines.join("\n");
@@ -680,6 +731,7 @@ function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[
   if (lensProblems.length > 0) counts.push(`${lensProblems.length} in views.json`);
   if (traceProblems.length > 0) counts.push(`${traceProblems.length} in the trace`);
   if (formProblems.length > 0) counts.push(`${formProblems.length} in forms.json`);
+  if (layoutProblems.length > 0) counts.push(`${layoutProblems.length} saving the layout`);
   if (warnings.length > 0) counts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
 
   // "no problems" rather than nothing, for the same reason an empty loss profile is still written out in
@@ -727,8 +779,16 @@ function redraw(): void {
   status.textContent = counts.join(" · ");
 
   if (view === undefined) {
-    view = renderGraph(el("graph"), graph, { onSelect: select, onFocus: focusOnId });
-  } else view.update(graph);
+    view = renderGraph(el("graph"), graph, {
+      onSelect: select,
+      onFocus: focusOnId,
+      onMoved: (positions) => void remember(positions),
+      saved: viewOf(layout, layoutView()).nodes,
+    });
+  } else {
+    view.setSaved(viewOf(layout, layoutView()).nodes);
+    view.update(graph);
+  }
 
   // A selection is an identity, so it survives this rebuild (`docs/design.md` 2.3) — which is the whole
   // reason it is an id and not a reference into a model that was just thrown away.
@@ -762,12 +822,14 @@ function fillLenses(): void {
 }
 
 async function load(): Promise<void> {
-  const [sourcesResponse, viewsResponse, traceResponse, formsResponse] = await Promise.all([
+  const [sourcesResponse, viewsResponse, traceResponse, formsResponse, layoutResponse] =
+    await Promise.all([
     fetch("/sources.json"),
     fetch("/views.json"),
     fetch("/trace.ndjson"),
     fetch("/forms.json"),
-  ]);
+    fetch("/layout.json"),
+    ]);
 
   if (!sourcesResponse.ok) {
     status.textContent = `could not read the model: ${sourcesResponse.status}`;
@@ -791,6 +853,14 @@ async function load(): Promise<void> {
   } else {
     runs = [];
     traceProblems = [];
+  }
+
+  if (layoutResponse.ok) {
+    const parsed = parseLayout(await layoutResponse.text());
+    layout = parsed.layout;
+    // A problem in the file is reported; it is never a reason to refuse to draw. The file is optional and
+    // "deleting it loses saved positions and nothing else".
+    layoutProblems = parsed.problems;
   }
 
   if (formsResponse.ok) {

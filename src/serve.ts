@@ -12,7 +12,7 @@
 
 import { build, type BuildContext, context } from "esbuild";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
 import { dirname, extname, join as joinPath, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +81,20 @@ export async function collect(paths: readonly string[]): Promise<string[]> {
  * Merged across roots, first one winning a name clash, and absent is not an error: "deleting this file
  * loses saved lenses and nothing else" (`20-ir.md` 6.1).
  */
+/**
+ * Where a sidecar is written.
+ *
+ * The first path's root, because a workspace has one `.7k/` and writing into several would make
+ * "which file wins" a question nobody should have to answer.
+ */
+async function sidecarPath(paths: readonly string[], name: string): Promise<string | undefined> {
+  const first = paths[0];
+  if (first === undefined) return undefined;
+  const info = await stat(first).catch(() => undefined);
+  if (info === undefined) return undefined;
+  return joinPath(info.isFile() ? dirname(first) : first, ".7k", name);
+}
+
 /** Reads one sidecar out of `.7k/`, merged across roots. Absent is `{}`, not an error. */
 export async function readSidecar(
   paths: readonly string[],
@@ -152,6 +166,13 @@ export async function readViews(
   return { text: JSON.stringify(merged), problems };
 }
 
+/** Reads a request body as text. Small by construction: a layout file is positions. */
+const read = async (req: IncomingMessage): Promise<string> => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf-8");
+};
+
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -196,6 +217,15 @@ export async function serve(options: ServeOptions): Promise<Serving> {
   };
   await rebuild();
 
+  /**
+   * When Spider last wrote a sidecar itself.
+   *
+   * The loop this closes: the page drags a node, PUTs `layout.json`, the watcher sees the write and tells
+   * the page to reload, the page re-reads the layout it just sent. Harmless once and maddening while
+   * dragging, so a change within a moment of our own write is not announced.
+   */
+  let wrote = 0;
+
   const listeners = new Set<ServerResponse>();
   const announce = (): void => {
     for (const res of listeners) res.write("event: changed\ndata: 1\n\n");
@@ -233,6 +263,32 @@ export async function serve(options: ServeOptions): Promise<Serving> {
       }
       const text = await readFile(tracePath, "utf-8");
       res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      res.end(text);
+      return;
+    }
+
+    if (url.pathname === "/layout.json") {
+      if (req.method === "PUT") {
+        const target = await sidecarPath(paths, "layout.json");
+        if (target === undefined) {
+          res.writeHead(409, { "content-type": "text/plain; charset=utf-8" });
+          res.end("nowhere to write a layout");
+          return;
+        }
+        const body = await read(req);
+        // Written whole, because the page holds the whole file: it read it, changed some positions and
+        // kept everything else, which is the only way a stale entry survives (`20-ir.md` 6.2).
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, body, "utf-8");
+        // Remembered so the watcher does not announce Spider's own write back to the page that made it.
+        wrote = Date.now();
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      const text = await readSidecar(paths, "layout.json");
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
       res.end(text);
       return;
     }
@@ -300,6 +356,9 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     const changed = (): void => {
       if (pending !== undefined) clearTimeout(pending);
       pending = setTimeout(() => {
+        // Our own write, coming back around. Announcing it would make the page reload the positions it
+        // had just sent, mid-drag.
+        if (Date.now() - wrote < 400) return;
         void rebuild().then(announce);
       }, 60);
     };

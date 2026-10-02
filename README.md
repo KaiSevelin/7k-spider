@@ -24,7 +24,7 @@ It watches the files, so editing a `.7k` redraws the page — and because the la
 the parts you did not change stay where they were.
 
 ```
-npm test        # 201 tests
+npm test        # 229 tests
 npm run build
 ```
 
@@ -124,6 +124,19 @@ than documented.
 a composer built on one would accept a payload breaking an `invariant` and have no way to say it had
 missed something. Validating against Core makes the composer exactly as strict as `7k check`.
 
+## Dragging, and the rule that makes it worth it
+
+Drag a node and it stays dragged, in `.7k/layout.json`.
+
+> **A missing node falls back to auto-layout for that node, not for the view.**
+
+That rules out the obvious implementation. Lay the graph out and then move the saved nodes, and every
+*unsaved* node sits where it would have gone if the saved ones were elsewhere — so adding one service
+shuffles the picture anyway, just less obviously. Instead a saved node is placed and fixed, and an unsaved
+one is nudged only as far as it must be to clear it. No saved position depends on what else exists.
+
+There is a test that re-runs ELK over a bigger graph and asserts the saved node did not budge.
+
 ## Three ways to narrow what you are looking at
 
 A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived
@@ -172,7 +185,7 @@ From there, three rules:
 2. **Replay** — a trace animated over the graph, timeline as transport. **Done.**
 3. **Sequence** — a sequence diagram, with all three views linked. **Done.**
 4. **Composer, read-only** — build a message and watch it validated. **Done.**
-5. **Mutation** — editing the model from the graph.
+5. **Mutation** — saved layout **done**; editing the model itself is not.
 
 Read-only first and mutation last, because the authoring experience already exists in the
 [VS Code extension](https://github.com/KaiSevelin/7k-vscode) while surgical mutation is the riskiest

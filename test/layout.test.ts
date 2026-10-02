@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildWorkspace, type LinkedModel } from "@sevenk/core";
 import { buildGraph, type Graph } from "../src/graph.js";
 import { elementsOf, LAYOUT, STYLE } from "../src/render.js";
+import { mergeLayout } from "../src/layout.js";
 
 const MODEL = `
 package acme.shop
@@ -55,13 +56,30 @@ beforeAll(() => {
 });
 
 /** Lays a graph out headlessly and returns each node's position, rounded to whole pixels. */
-async function positions(graph: Graph): Promise<Record<string, string>> {
+async function positions(
+  graph: Graph,
+  saved: Readonly<Record<string, { x: number; y: number }>> = {},
+): Promise<Record<string, string>> {
   const cy: Core = cytoscape({ headless: true, elements: elementsOf(graph), style: STYLE });
   await new Promise<void>((done) => {
     const layout = cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions);
     layout.on("layoutstop", () => done());
     layout.run();
   });
+
+  // The same merge `renderGraph` applies, so the invariant is tested where it has to hold.
+  if (Object.keys(saved).length > 0) {
+    const auto = new Map<string, { x: number; y: number }>();
+    cy.nodes().forEach((n) => {
+      if (n.isParent()) return;
+      auto.set(n.id(), n.position());
+    });
+    for (const { id, at } of mergeLayout(auto, saved)) {
+      const node = cy.getElementById(id);
+      if (node.nonempty()) node.position(at);
+    }
+  }
+
   const out: Record<string, string> = {};
   cy.nodes().forEach((n) => {
     const p = n.position();
@@ -88,6 +106,44 @@ describe("the stylesheet and the layout are real", () => {
     expect(leaves.length).toBeGreaterThan(4);
     for (const [id, at] of leaves) expect(at, id).not.toBe("0,0");
     expect(new Set(leaves.map(([, at]) => at)).size).toBe(leaves.length);
+  });
+});
+
+describe("a saved layout survives the engine", () => {
+  it("places a saved node where the file says, through real ELK", async () => {
+    // The pure merge is tested on its own; this is the same rule against the engine that will actually
+    // try to move things.
+    const g = buildGraph(model());
+    const saved = { "service:acme.shop.OrderService": { x: 1000, y: 1000 } };
+    const laid = await positions(g, saved);
+    expect(laid["service:acme.shop.OrderService"]).toBe("1000,1000");
+  });
+
+  it("does not move a saved node when a service is added", async () => {
+    // The rule `layout.json` exists for, end to end: ELK re-runs over a bigger graph and reports
+    // different positions for everything, and the saved node does not budge.
+    const saved = {
+      "service:acme.shop.OrderService": { x: 300, y: 120 },
+      "pipe:acme.shop.events": { x: 300, y: 260 },
+    };
+    const before = await positions(buildGraph(model()), saved);
+    const after = await positions(
+      buildGraph(
+        model(
+          `${MODEL}
+service Audit {
+  reacts Shipped from events {
+    replies none
+  }
+}
+`,
+        ),
+      ),
+      saved,
+    );
+
+    for (const id of Object.keys(saved)) expect(after[id], id).toBe(before[id]);
+    expect(after["service:acme.shop.Audit"]).toBeDefined();
   });
 });
 

@@ -615,7 +615,80 @@ A field whose type did not resolve is **drawn**, named, and marked as unresolved
 while you were typing a type name would be useless at the moment you need it (D20) — the same rule the
 graph follows.
 
-## 8. Increments
+## 8. Saved layout, and the first thing Spider writes
+
+Increment 5, first half. Drag a node and it stays dragged, in `.7k/layout.json`.
+
+### 8.1 Why layout before the model
+
+D92 deferred mutation as "both the riskiest part and the one most likely to consume the schedule", and
+named the three hard parts: the unsaved-buffer problem, the file watcher, surgical editing of source text.
+
+Only one of those is about the *model*. A layout file is per-developer, gitignored, deletable, and
+"deleting this file loses saved positions and nothing else" — so writing it exercises the whole write path
+where a mistake costs nothing, while the surgical-editing problem waits. It was also a recorded gap and a
+prerequisite: dragging a node is meaningless without persisting it, and persisting needs reading.
+
+### 8.2 The rule the design turns on
+
+> **A missing node falls back to auto-layout for that node, not for the view.** Adding a service places
+> the new one and leaves everything else where it was. (`20-ir.md` 6.2)
+
+That sentence rules out the obvious implementation, which is to lay the graph out and then move the saved
+nodes into place. Do that and every *unsaved* node is positioned as though the saved ones were somewhere
+else — so adding one service shuffles the picture anyway, just less obviously.
+
+So the merge runs the other way. A saved node is placed exactly where it was saved and is then **fixed**.
+An unsaved node takes its auto position and is moved only as far as it must be to clear a fixed one, along
+one axis, deterministically, and bounded so a crowded corner cannot loop. **No saved node's position
+depends on which other nodes exist** — the rule holds by construction rather than by care.
+
+`test/layout-file.test.ts` asserts it on the pure merge, and `test/layout.test.ts` asserts it again
+against real Cytoscape and real ELK: the engine re-runs over a bigger graph, reports different positions
+for everything, and the saved node does not budge.
+
+### 8.3 The loop a write creates
+
+Drag → `PUT /layout.json` → the server writes → the watcher sees the write → the page is told to reload →
+the page re-reads the positions it had just sent. Harmless once and maddening while dragging.
+
+The server remembers when it last wrote a sidecar itself and does not announce a change within a moment
+of it. That is a **window, not a mode**: editing a model file still reloads the page, and there is a test
+for each half, because suppressing too much is the same bug as suppressing too little.
+
+### 8.4 What the write is, and is not
+
+**The page sends the whole file.** It read it, changed some positions and kept everything else — which is
+the only way a **stale entry survives**. A deleted service leaves its position behind on purpose: the file
+is shared with a half-renamed model and another branch, and silently dropping the position of something
+temporarily unresolved would lose work for a reason the author cannot see.
+
+**Keys are sorted and coordinates are integers**, so two people dragging different nodes produce a diff of
+the lines they changed rather than a reordering of the file. This is a file that gets reviewed.
+
+**A failed write is said, not swallowed.** It appears in the problems count like anything else. A drag that
+silently does not persist is worse than one that was never offered — which is also why the graph is
+draggable only when the host passes a handler that can save: `autoungrabify` is on without one.
+
+### 8.5 What is left, and what it needs
+
+**Model mutation.** Adding a service, renaming one, adding an `emits`. Three things it needs that layout
+did not:
+
+- **Surgical text editing.** The source *is* the model, so a rename edits text in place. Regenerating a
+  file from the IR would reformat it, lose comments, and make every change an unreviewable diff.
+- **An answer to the unsaved buffer.** A browser cannot know that the file is open in an editor with
+  unsaved changes; a VS Code webview can ask. That asymmetry may be what decides the host for this
+  increment rather than the other way round.
+- **Rename touching the sidecars in the same operation** (`20-ir.md` 6.4), or a rename silently discards
+  every saved position and lens entry that named the old name.
+
+**Collapsing a package**, where coordinates are relative to the collapsed parent, so collapsing does not
+invalidate its children's positions. The `collapsed` list is read and kept; nothing acts on it yet.
+
+**Edge waypoints** are read, kept and written back untouched. Nothing draws them.
+
+## 9. Increments
 
 Each one is useful on its own, and none is a prerequisite rewrite of the one before.
 
@@ -627,13 +700,15 @@ Each one is useful on its own, and none is a prerequisite rewrite of the one bef
    This absorbed the old "linked selection" increment, because linking three views turned out to be one
    `resolve` and no new machinery.
 4. **Composer, read-only** — build a message and watch it validated. **Done**, see section 7.
-5. **Mutation** — editing the model from the graph.
+5. **Mutation** — in two halves. **Saved layout is done**, see section 8: dragging persists to
+   `.7k/layout.json`, which is where the write path belongs first because a mistake there costs nothing.
+   **Model mutation** is not, and section 8.5 says what it needs.
 
 Read-only first, and mutation last, because the authoring experience already exists in the extension
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
 
-## 9. Rendering
+## 10. Rendering
 
 **Cytoscape.js**, with layout from **ELK** through `cytoscape-elk` (D92).
 
@@ -652,7 +727,7 @@ rather than composing nodes from components:
   generated image rather than markup. Free for the first increment, which is boxes and labels, and
   not free later.
 
-## 10. Host
+## 11. Host
 
 A **local web app**, served by a command. The renderer goes in a package that knows nothing about its
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a

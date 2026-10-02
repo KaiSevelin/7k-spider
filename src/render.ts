@@ -18,6 +18,7 @@
 import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from "cytoscape";
 import elk from "cytoscape-elk";
 import type { Graph, GraphNode } from "./graph.js";
+import { mergeLayout, type Point } from "./layout.js";
 import type { Highlight, SelectionId } from "./selection.js";
 
 let registered = false;
@@ -39,6 +40,15 @@ export interface RenderOptions {
    * without focus — a webview panel, say — simply does not pass it.
    */
   readonly onFocus?: (id: SelectionId) => void;
+  /**
+   * Called when a node is dropped, with where it landed.
+   *
+   * Passing it is what makes the graph draggable at all: a host that cannot persist a position should not
+   * let one be moved, because a drag that silently reverts is worse than one that never happened.
+   */
+  readonly onMoved?: (positions: Readonly<Record<SelectionId, Point>>) => void;
+  /** Positions from `layout.json`. A node that has one is placed there and does not move. */
+  readonly saved?: Readonly<Record<SelectionId, Point>>;
 }
 
 /** What a message looks like going past. */
@@ -61,6 +71,10 @@ export interface Rendered {
   send(send: Send): void;
   /** Removes anything still in flight, for a seek or a redraw. */
   clearSends(): void;
+  /** Replaces the saved positions, re-placing what they name. */
+  setSaved(saved: Readonly<Record<SelectionId, Point>>): void;
+  /** Every node's position now, which is what a `layout.json` write is made of. */
+  positions(): Readonly<Record<SelectionId, Point>>;
   destroy(): void;
 }
 
@@ -302,15 +316,54 @@ export function renderGraph(
     container,
     elements: elementsOf(graph),
     style: STYLE,
-    // Panning and zooming are fine; dragging a node is mutation, and that is increment 5.
-    autoungrabify: true,
+    // Draggable only when the host can persist where it lands: a drag that silently reverts on the next
+    // keystroke is worse than one that was never offered.
+    autoungrabify: options.onMoved === undefined,
     wheelSensitivity: 0.2,
   });
 
+  let saved: Readonly<Record<SelectionId, Point>> = options.saved ?? {};
+
+  /**
+   * Lays the graph out, then places whatever the file saved.
+   *
+   * The merge is `layout.json`'s rule, not a preference: a saved node goes exactly where it was saved and
+   * an unsaved one takes its auto position, nudged only to clear a saved one. So adding a service cannot
+   * move a saved one (`20-ir.md` 6.2).
+   */
   const relayout = (): void => {
-    cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions).run();
+    const layout = cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions);
+    layout.on("layoutstop", () => place());
+    layout.run();
   };
+
+  const place = (): void => {
+    if (Object.keys(saved).length === 0) return;
+    const auto = new Map<SelectionId, Point>();
+    cy.nodes().forEach((n) => {
+      if (n.hasClass("marker") || n.isParent()) return;
+      auto.set(n.id(), n.position());
+    });
+
+    cy.batch(() => {
+      for (const { id, at } of mergeLayout(auto, saved)) {
+        const node = cy.getElementById(id);
+        if (node.nonempty()) node.position(at);
+      }
+    });
+  };
+
   relayout();
+
+  if (options.onMoved !== undefined) {
+    const onMoved = options.onMoved;
+    // `dragfree` rather than `drag`: one write when the node is dropped, not one per frame.
+    cy.on("dragfree", "node", (e) => {
+      const node = e.target as NodeSingular;
+      const at = node.position();
+      onMoved({ [node.id() as SelectionId]: { x: Math.round(at.x), y: Math.round(at.y) } });
+    });
+  }
 
   if (options.onSelect !== undefined) {
     const onSelect = options.onSelect;
@@ -440,9 +493,24 @@ export function renderGraph(
         cy.elements().remove();
         cy.add(elementsOf(next));
       });
-      cy.layout({ ...LAYOUT, fit: false } as unknown as cytoscape.LayoutOptions).run();
+      const layout = cy.layout({ ...LAYOUT, fit: false } as unknown as cytoscape.LayoutOptions);
+      layout.on("layoutstop", () => place());
+      layout.run();
       cy.pan(pan);
       cy.zoom(zoom);
+    },
+    setSaved(next) {
+      saved = next;
+      place();
+    },
+    positions() {
+      const out: Record<SelectionId, Point> = {};
+      cy.nodes().forEach((n) => {
+        if (n.hasClass("marker") || n.isParent()) return;
+        const at = n.position();
+        out[n.id()] = { x: Math.round(at.x), y: Math.round(at.y) };
+      });
+      return out;
     },
     destroy: () => cy.destroy(),
   };
