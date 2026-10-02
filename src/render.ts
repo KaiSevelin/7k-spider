@@ -88,6 +88,9 @@ export const elementsOf = (graph: Graph): ElementDefinition[] => [
       // because a run-on label is unreadable at any width.
       label: e.messages.map((m) => m.slice(m.lastIndexOf(".") + 1)).join("\n"),
       messages: e.messages,
+      // Carried so a message selection can find its edges: a message is a label, not a node, so there
+      // is no element with its id to look up.
+      messageIds: e.messageIds,
       direction: e.direction,
       ...(e.subscription === undefined ? {} : { subscription: e.subscription }),
       incomplete: e.incomplete === true ? "yes" : "no",
@@ -281,6 +284,18 @@ export function renderGraph(
         const el = cy.getElementById(id);
         if (el.nonempty()) wanted.merge(el);
       }
+
+      // A message is an edge label rather than a node, so selecting one emphasises the edges carrying
+      // it. The selection model always said a message type was selectable; until search, nothing ever
+      // selected one, and this silently did nothing.
+      const carrying = cy
+        .edges()
+        .filter((e) => {
+          const ids = e.data("messageIds") as readonly string[] | undefined;
+          return ids !== undefined && ids.some((id) => h.declarations.has(id));
+        });
+      wanted.merge(carrying);
+
       if (wanted.empty()) return;
 
       // A node's edges and its package come along, because a service lit up inside a dimmed box

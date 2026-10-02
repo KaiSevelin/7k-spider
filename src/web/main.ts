@@ -28,6 +28,7 @@ import {
 } from "../focus.js";
 import { EVERYTHING, isPort, parseViews, resolveLens, type Lens, type Views } from "../lens.js";
 import { nodeFor, renderGraph, type Rendered } from "../render.js";
+import { buildIndex, search, type Entry, type Hit } from "../search.js";
 import { join, resolve, type Selection, type SelectionId } from "../selection.js";
 
 interface Sources {
@@ -47,6 +48,9 @@ const lensPicker = el<HTMLSelectElement>("lens");
 const focusChip = el("focus");
 const focusName = el("focusName");
 const focusHops = el("focusHops");
+const palette = el("palette");
+const paletteInput = el<HTMLInputElement>("paletteInput");
+const paletteList = el("paletteList");
 
 let model: LinkedModel | undefined;
 /** The whole graph, before any lens. Kept so a lens change needs no re-parse. */
@@ -59,6 +63,10 @@ let views: Views = {};
 let lensProblems: readonly string[] = [];
 /** Transient, and never written anywhere: that is what makes it safe to be aggressive. */
 let focus: Focus = NOT_FOCUSED;
+/** Over the model, not the graph: a message is a label rather than a node, and people search for one. */
+let index: readonly Entry[] = [];
+let hits: readonly Hit[] = [];
+let cursor = 0;
 
 const EVERYTHING_LABEL = "everything";
 
@@ -111,8 +119,51 @@ function describe(id: SelectionId | undefined): void {
 
   const node = nodeFor(graph, id);
   const edge = graph.edges.find((e) => e.id === id);
+
+  // A declaration the graph does not draw — a message, which is an edge label; a record or a value,
+  // which the graph has no place for at all. Search can reach these, so the sidebar has to answer for
+  // them rather than silently closing.
   if (node === undefined && edge === undefined) {
-    sidebar.classList.remove("open");
+    const entry = index.find((candidate) => candidate.id === id);
+    if (entry === undefined) {
+      sidebar.classList.remove("open");
+      return;
+    }
+
+    const heading = document.createElement("h2");
+    heading.textContent = entry.qname;
+
+    const facts = document.createElement("dl");
+    const dt = document.createElement("dt");
+    dt.textContent = "kind";
+    const dd = document.createElement("dd");
+    dd.textContent = entry.kind;
+    facts.append(dt, dd);
+
+    // For a message, the edges carrying it are the useful thing, and they are where you can go next.
+    const carrying = graph.edges.filter((e) => e.messageIds.includes(id));
+    const parts =
+      carrying.length > 0
+        ? section(
+            "carried on",
+            carrying.map((e) =>
+              row(
+                `${bare(nodeFor(graph!, e.from)?.qname ?? e.from)} → ${bare(nodeFor(graph!, e.to)?.qname ?? e.to)}`,
+                e.direction === "emits" ? e.to : e.from,
+              ),
+            ),
+          )
+        : section("not drawn", [
+            row(
+              entry.kind === "message"
+                ? "nothing in view carries it"
+                : "the graph draws services and pipes",
+              undefined,
+            ),
+          ]);
+
+    sidebar.replaceChildren(heading, facts, ...parts);
+    sidebar.classList.add("open");
     return;
   }
 
@@ -225,6 +276,105 @@ function setRadius(by: number): void {
   redraw();
 }
 
+// ---- search ----------------------------------------------------------------
+
+const KIND_LABEL: Readonly<Record<string, string>> = {
+  service: "service",
+  pipe: "pipe",
+  package: "package",
+  message: "message",
+  record: "record",
+  envelope: "envelope",
+  enum: "enum",
+  value: "value",
+  label: "label",
+  saga: "saga",
+  schedule: "schedule",
+  upcast: "upcast",
+};
+
+function renderHits(): void {
+  paletteList.replaceChildren();
+
+  if (hits.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = paletteInput.value.trim() === "" ? "type a name, or a kind" : "nothing matches";
+    paletteList.append(li);
+    return;
+  }
+
+  hits.forEach((hit, i) => {
+    const li = document.createElement("li");
+    li.setAttribute("aria-selected", String(i === cursor));
+
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.textContent = KIND_LABEL[hit.kind] ?? hit.kind;
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = hit.name;
+
+    const where = document.createElement("span");
+    where.className = "where";
+    where.textContent = hit.qname.slice(0, Math.max(0, hit.qname.length - hit.name.length - 1));
+
+    li.append(kind, name, where);
+
+    if (!hit.drawn) {
+      const mark = document.createElement("span");
+      mark.className = "hiddenMark";
+      // Said rather than hidden: a result you cannot click to is still worth finding, and finding out
+      // why you cannot is the point.
+      mark.textContent = "not drawn";
+      li.append(mark);
+    }
+
+    li.addEventListener("click", () => choose(i));
+    paletteList.append(li);
+  });
+
+  paletteList.children[cursor]?.scrollIntoView({ block: "nearest" });
+}
+
+function refreshHits(): void {
+  const drawn = new Set((graph?.nodes ?? []).map((n) => n.id));
+  // Edges carry messages, which are not nodes — so a message counts as drawn when something carries it.
+  for (const edge of graph?.edges ?? []) for (const id of edge.messageIds) drawn.add(id);
+  hits = search(index, paletteInput.value, { drawn });
+  cursor = 0;
+  renderHits();
+}
+
+function openPalette(): void {
+  palette.hidden = false;
+  paletteInput.value = "";
+  refreshHits();
+  paletteInput.focus();
+}
+
+function closePalette(): void {
+  palette.hidden = true;
+  paletteInput.blur();
+}
+
+/** Takes the result under the cursor. */
+function choose(at: number = cursor): void {
+  const hit = hits[at];
+  if (hit === undefined) return;
+  closePalette();
+
+  // A focus is transient and derived, so going somewhere else clears it rather than fighting it. The
+  // lens is left alone: someone chose it, and silently discarding it would be worse than a dead end the
+  // sidebar can explain.
+  if (isFocused(focus)) {
+    focus = { seeds: [], radius: focus.radius };
+    redraw();
+  }
+  select(hit.id);
+}
+
 /** Diagnostics are shown, never swallowed: a warning is usually the interesting part of a model. */
 function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[]): void {
   const lines = [
@@ -274,6 +424,7 @@ function redraw(): void {
 function draw(sources: Sources): void {
   const ws = buildWorkspace(sources.files.map((f) => ({ path: f.path, source: f.source })));
   model = ws.model;
+  index = buildIndex(ws.model);
   whole = buildGraph(ws.model, optionsFromForm());
   // The focus is an id too, so it survives this rebuild — and `applyFocus` shows everything rather
   // than nothing if the thing it names has gone.
@@ -319,6 +470,26 @@ async function load(): Promise<void> {
 }
 
 lensPicker.addEventListener("change", redraw);
+el("find").addEventListener("click", openPalette);
+paletteInput.addEventListener("input", refreshHits);
+paletteInput.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || (e.key === "n" && e.ctrlKey)) {
+    cursor = Math.min(hits.length - 1, cursor + 1);
+    renderHits();
+    e.preventDefault();
+  } else if (e.key === "ArrowUp" || (e.key === "p" && e.ctrlKey)) {
+    cursor = Math.max(0, cursor - 1);
+    renderHits();
+    e.preventDefault();
+  } else if (e.key === "Enter") {
+    choose();
+    e.preventDefault();
+  } else if (e.key === "Escape") {
+    closePalette();
+    e.preventDefault();
+  }
+});
+
 el("focusClear").addEventListener("click", toggleFocus);
 el("focusIn").addEventListener("click", () => setRadius(1));
 el("focusOut").addEventListener("click", () => setRadius(-1));
@@ -329,7 +500,22 @@ for (const id of ["packages", "dead"]) {
 }
 
 document.addEventListener("keydown", (e) => {
+  // Ctrl-K reaches the palette from anywhere, including from inside the palette, where it closes it.
+  if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
+    if (palette.hidden) openPalette();
+    else closePalette();
+    e.preventDefault();
+    return;
+  }
+
   if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
+
+  // `/` as well, because it costs nothing and half the world's tools use it.
+  if (e.key === "/") {
+    openPalette();
+    e.preventDefault();
+    return;
+  }
 
   // Escape undoes the most recent narrowing first: the focus, then the selection. A single key that
   // cleared both would make it impossible to keep a focus while looking at something inside it.

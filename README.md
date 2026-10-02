@@ -20,7 +20,7 @@ It watches the files, so editing a `.7k` redraws the page — and because the la
 the parts you did not change stay where they were.
 
 ```
-npm test        # 111 tests
+npm test        # 131 tests
 npm run build
 ```
 
@@ -85,6 +85,16 @@ tell.
 
 Focus reaches **two hops** by default, because the graph is bipartite on purpose: a service's neighbours
 at one hop are pipes, and "what does this talk to" is a question the decoupling makes you ask twice.
+
+## Finding things
+
+`Ctrl-K` searches the **model**, not the graph — because a message is an edge label rather than a node, and
+`OrderPlaced` is exactly the sort of name people remember. Records, values, sagas and schedules are findable
+too. A bare kind word lists that kind: `pipes`.
+
+Ranking is deterministic down to the tie-break, so the list never shifts under the cursor. A result the lens
+or focus has hidden is still shown, marked *not drawn*, because finding out the thing you wanted is outside
+the current view beats not finding it.
 
 ## The idea the whole thing rests on
 

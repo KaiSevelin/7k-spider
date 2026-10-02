@@ -100,6 +100,73 @@
       }
       #focus button:hover { background: var(--package); }
 
+      header button {
+        font: inherit;
+        color: var(--ink-dim);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 2px 8px;
+        cursor: pointer;
+      }
+      header button:hover { color: var(--ink); border-color: var(--ink-dim); }
+
+      /* Over the graph, near the top, where a palette is expected to be. */
+      #palette {
+        position: absolute;
+        top: 12%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(540px, calc(100% - 24px));
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: 0 8px 28px rgb(0 0 0 / 22%);
+        overflow: hidden;
+      }
+      #palette[hidden] { display: none; }
+
+      #paletteInput {
+        display: block;
+        width: 100%;
+        font: inherit;
+        font-size: 14px;
+        color: var(--ink);
+        background: none;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        padding: 10px 12px;
+      }
+      #paletteInput:focus { outline: none; }
+
+      #paletteList {
+        margin: 0;
+        padding: 4px;
+        list-style: none;
+        max-height: 46vh;
+        overflow: auto;
+      }
+      #paletteList li {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      /* Aimed at with the keyboard, so the current row must be unmistakable. */
+      #paletteList li[aria-selected="true"] { background: var(--service); }
+      #paletteList li .kind {
+        flex: 0 0 4.5em;
+        color: var(--ink-dim);
+        font-size: 11px;
+      }
+      #paletteList li .name { font-weight: 600; }
+      #paletteList li .where { color: var(--ink-dim); font-size: 11px; }
+      /* A result the lens or focus has hidden is still worth finding, and worth marking as a dead end. */
+      #paletteList li .hiddenMark { color: var(--warn); font-size: 11px; margin-left: auto; }
+      #paletteList li.empty { color: var(--ink-dim); cursor: default; }
+
       select {
         font: inherit;
         color: var(--ink);
@@ -182,6 +249,7 @@
   <body>
     <header>
       <h1>7K Spider</h1>
+      <button type="button" id="find" title="find anything (Ctrl-K)">find&hellip;</button>
       <span id="status">loading…</span>
       <span id="focus" hidden>
         focus <b id="focusName"></b>
@@ -197,6 +265,17 @@
     </header>
     <main>
       <div id="graph"></div>
+
+      <div id="palette" hidden>
+        <input
+          id="paletteInput"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="find a service, pipe, message&hellip;  (try: pipes)"
+        />
+        <ul id="paletteList"></ul>
+      </div>
       <aside id="sidebar"></aside>
       <pre id="problems"></pre>
     </main>

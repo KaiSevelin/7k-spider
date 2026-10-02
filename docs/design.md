@@ -324,10 +324,54 @@ Three properties, all tested:
 `Escape` undoes the most recent narrowing first — the focus, then the selection. A single key that
 cleared both would make it impossible to keep a focus while looking at something inside it.
 
-### 4.4 What is still missing
+### 4.4 Search
 
-**Search.** `ctrl-K` over declarations, which is the one navigation primitive whose usefulness does not
-depend on how big the model is.
+`Ctrl-K`, or `/`, or the **find…** button. Arrows and `Enter`; `Escape` closes.
+
+**It searches the model, not the graph.** A reader typing `OrderPlaced` is looking for the message, and a
+message is an edge *label* rather than a node (3.1) — so searching only what is drawn would fail on exactly
+the names people remember. Records, values, enums, sagas and schedules are findable for the same reason:
+they are what the model is made of, even where the graph has no place for them. On the examples that is 90
+entries over 85 declarations.
+
+Ranking is **total and deterministic**, down to the tie-break, because a palette whose order shifts under
+the cursor is one you have to read rather than aim at. Five coarse tiers — exact name, prefix, substring,
+a match in the package path, then a loose subsequence — and at equal quality the things the graph draws
+come first, since a reader searching in a graph tool is usually trying to get *to* somewhere on it.
+
+Three decisions worth recording:
+
+**A subsequence must start at a word.** Without that rule `pii` matched `ShippingService` — p from
+Shi**pp**ing, then i, then i — a true subsequence and a useless result, and the whole tail of every list
+looked like that. With it, `ordsvc` and `osrv` both still reach `OrderService`, because `o` and `s` begin
+`Order` and `Service`. Subsequence matching is also off entirely for a single character, which would
+otherwise match nearly everything at the moment you have typed the least.
+
+**A bare kind word lists that kind.** `pipes` answers "what pipes are there", which is a real question and
+typing the word is the obvious way to ask it. `pipe commands` and `service:order` filter and search
+together, using the same vocabulary `views.json` selectors use rather than a second set of words to learn.
+The cost is that a declaration actually named `Pipe` needs more characters typed — predictable, which
+beats clever here.
+
+**An empty query returns nothing**, not everything. A palette that opens full of arbitrary results teaches
+you to ignore it.
+
+A result the lens or focus has hidden is still shown, marked **not drawn**, because finding out that the
+thing you wanted is outside the current view is more useful than not finding it. Choosing one clears the
+**focus**, which is transient and derived, and leaves the **lens** alone — someone chose that, and
+silently discarding it would be worse than a dead end the sidebar can explain.
+
+### 4.5 What search exposed
+
+Selecting a message had never worked. The selection model always said a message type was selectable and
+"highlights edges", but the renderer resolved a highlight by `cy.getElementById`, and a message has no
+element — so the highlight found nothing and bailed out. Nothing had ever selected one, because until
+search there was no way to.
+
+Edges now carry their `messageIds`, and selecting a message emphasises every edge carrying it. On the
+examples, `SeatsReserved` lights two.
+
+### 4.6 What is still missing
 
 **Collapsing a package.** `layout.json` has a `collapsed` list and the aggregation is the same `restrict`
 plus ports, so the hard part is already built.
