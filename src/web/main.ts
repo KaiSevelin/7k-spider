@@ -36,6 +36,7 @@ import { EVERYTHING, isPort, parseViews, resolveLens, type Lens, type Views } fr
 import { nodeFor, renderGraph, type Rendered } from "../render.js";
 import { createPlayer, positions, runsOf, type Player, type Run } from "../play.js";
 import { buildIndex, search, type Entry, type Hit } from "../search.js";
+import { renderSequence, type SequenceView } from "../sequence-view.js";
 import { join, readTrace, resolve, type Selection, type SelectionId, type TraceEvent } from "../selection.js";
 
 interface Sources {
@@ -57,6 +58,7 @@ const timeline = el("timeline");
 const track = el("track");
 const playhead = el("playhead");
 const position = el("position");
+const sequencePanel = el("sequence");
 const lensPicker = el<HTMLSelectElement>("lens");
 const focusChip = el("focus");
 const focusName = el("focusName");
@@ -91,6 +93,7 @@ let runs: readonly Run[] = [];
 /** The run being replayed. */
 let trace: readonly TraceEvent[] = [];
 let player: Player | undefined;
+let sequence: SequenceView | undefined;
 
 const EVERYTHING_LABEL = "everything";
 
@@ -266,11 +269,7 @@ function select(id: SelectionId | undefined): void {
   // A port is not a declaration, so it cannot be a `declaration` selection — but it is worth opening
   // the sidebar for, because what it hides is the only thing it has to say.
   selection = id === undefined || isPort(id) ? { k: "none" } : { k: "declaration", id };
-  if (model !== undefined && view !== undefined) {
-    // One resolver for every view, even while there is only one of them: the sequence and the timeline
-    // will render the same `Highlight` rather than computing their own.
-    view.highlight(resolve(join(model, []), selection));
-  }
+  applyHighlight();
   describe(id);
 }
 
@@ -322,6 +321,45 @@ function drawTrack(): void {
   playhead.hidden = shown < 0;
 }
 
+/**
+ * Opens or closes the sequence drawer.
+ *
+ * A drawer rather than a pane, because the graph is the view you keep and the sequence is the one you open
+ * when a trace is the question (`docs/design.md` 6.1). The graph is not re-laid out, so nothing moves
+ * underneath — only the viewport is squeezed.
+ */
+function toggleSequence(force?: boolean): void {
+  const open = force ?? sequencePanel.hidden;
+  sequencePanel.hidden = !open;
+  document.body.classList.toggle("sequence-open", open);
+  if (open) {
+    sequence?.update(trace);
+    applyHighlight();
+    sequence?.cursor(cursorKey());
+  }
+}
+
+/** The `(run, seq)` of the event playback has reached, if any. */
+function cursorKey(): string | undefined {
+  const at = player?.at ?? -1;
+  const event = at >= 0 ? trace[at] : undefined;
+  return event === undefined ? undefined : `${event.run}\u0000${event.seq}`;
+}
+
+/**
+ * Pushes the current selection to every view.
+ *
+ * One `resolve`, and each view renders what it is handed — which is the whole of what D25's "selecting in
+ * one highlights in all three" turned out to mean, and why there was never a second resolver to keep in
+ * step (`docs/design.md` 2.2).
+ */
+function applyHighlight(): void {
+  if (model === undefined) return;
+  const highlight = resolve(join(model, trace), selection);
+  view?.highlight(highlight);
+  sequence?.highlight(highlight);
+}
+
 function refreshTransport(): void {
   if (player === undefined) return;
   el("playPause").textContent = player.playing ? "\u23F8" : "\u25B6";
@@ -332,6 +370,7 @@ function refreshTransport(): void {
       ? `0 / ${trace.length}`
       : `${shown + 1} / ${trace.length}  ${event.kind}`;
   drawTrack();
+  sequence?.cursor(cursorKey());
 }
 
 /**
@@ -353,8 +392,9 @@ function showEvent(event: TraceEvent): void {
   }
 
   // The same `resolve` every view uses, so what lights up during a replay is what would light up if you
-  // had clicked the thing yourself.
-  view.highlight(resolve(join(model, trace), { k: "event", run: event.run, seq: event.seq }));
+  // had clicked the thing yourself — in the graph and in the sequence at once.
+  selection = { k: "event", run: event.run, seq: event.seq };
+  applyHighlight();
 }
 
 function fillRuns(): void {
@@ -385,11 +425,30 @@ function makePlayer(): void {
   view?.clearSends();
   if (trace.length === 0) {
     player = undefined;
+    sequence?.destroy();
+    sequence = undefined;
     timeline.hidden = true;
+    el("toggleSequence").hidden = true;
+    toggleSequence(false);
     return;
   }
   player = createPlayer(trace, { onEvent: showEvent, onChange: refreshTransport });
   timeline.hidden = false;
+  el("toggleSequence").hidden = false;
+
+  sequence?.destroy();
+  sequence = renderSequence(sequencePanel, trace, {
+    // Clicking a row selects that event, which highlights it in the graph as well — the linkage is just
+    // one selection resolved once.
+    onEvent: (key) => {
+      const at = trace.findIndex((e) => `${e.run}\u0000${e.seq}` === key);
+      if (at >= 0) player?.seek(at);
+    },
+    // And a lane heading selects the service or pipe it names, which is the graph's own currency.
+    onLane: (id) => select(id),
+  });
+  if (!sequencePanel.hidden) sequence.update(trace);
+
   refreshTransport();
 }
 
@@ -668,6 +727,7 @@ paletteInput.addEventListener("keydown", (e) => {
   }
 });
 
+el("toggleSequence").addEventListener("click", () => toggleSequence());
 el("run").addEventListener("change", () => selectRun());
 el("playPause").addEventListener("click", () => player?.toggle());
 el("stepOn").addEventListener("click", () => player?.step(1));
@@ -724,6 +784,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "f" || e.key === "F") toggleFocus();
+  if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
   if (e.key === " ") {
     player?.toggle();
     e.preventDefault();

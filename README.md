@@ -17,13 +17,14 @@ npm run serve ../7K/examples                        # the graph
 npm run serve ../7K/examples -- --trace run.ndjson  # and watch a trace play over it
 ```
 
-Then open http://127.0.0.1:7007. `Space` plays, arrows step, `Ctrl-K` finds things, `f` focuses.
+Then open http://127.0.0.1:7007. `Space` plays, arrows step, `s` opens the sequence diagram,
+`Ctrl-K` finds things, `f` focuses.
 
 It watches the files, so editing a `.7k` redraws the page — and because the layout is deterministic,
 the parts you did not change stay where they were.
 
 ```
-npm test        # 154 tests
+npm test        # 176 tests
 npm run build
 ```
 
@@ -89,6 +90,27 @@ timeline is for — so the transport compresses and the track tells the truth.
 A trace file routinely holds several runs, which cannot be played as one: each starts its clock where it
 likes. There is a run picker.
 
+## The sequence diagram
+
+`s` opens it. **Pipes are lifelines, not arrows** — which costs two arrows per hop and buys the two things
+a conventional diagram throws away.
+
+It does not invent causality: one publish and three deliveries are four facts, and joining them into
+service-to-service arrows would assert something the trace never said and competing consumers make false.
+
+And it shows the waiting, which is the most interesting thing a message-driven system does. Read down a
+real trace and the ack timeout and the retry backoff are plain:
+
+```
+  +5.0s   failed      ReserveSeats      <- the ack timeout elapsing
+  +1.0s   delivered   ReserveSeats      <- the first retry
+  +5.0s   failed      ReserveSeats
+  +2.0s   delivered   ReserveSeats      <- backoff doubling
+```
+
+Selecting in one view highlights in all three, which turned out to be *less* code rather than more: one
+`resolve`, and each view renders what it is handed.
+
 ## Three ways to narrow what you are looking at
 
 A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived
@@ -135,7 +157,7 @@ From there, three rules:
 
 1. **Graph** — services, pipes, packages, the boundary. No trace. **Done.**
 2. **Replay** — a trace animated over the graph, timeline as transport. **Done.**
-3. **Sequence** — a trace as a sequence diagram.
+3. **Sequence** — a sequence diagram, with all three views linked. **Done.**
 4. **Composer, read-only** — build a message and watch it validated.
 5. **Mutation** — editing the model from the graph.
 

@@ -263,6 +263,61 @@
       main { position: relative; min-height: 0; }
       #graph { position: absolute; inset: 0; }
 
+      /* A drawer rather than a pane: the graph is the view you keep, and the sequence is the one you
+         open when a trace is the question. It takes the right-hand edge full height, because a sequence
+         diagram is long. */
+      #sequence {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(620px, 62%);
+        overflow: auto;
+        background: var(--surface);
+        border-left: 1px solid var(--line);
+        box-shadow: -6px 0 18px rgb(0 0 0 / 10%);
+      }
+      #sequence[hidden] { display: none; }
+
+      .sequence { display: block; }
+      .sequence .lifeline { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; }
+      .sequence .lifeline-pipe { stroke: var(--pipe-line); stroke-dasharray: none; stroke-width: 2; }
+      .sequence .lane {
+        fill: var(--ink);
+        font: 600 11px var(--mono);
+        text-anchor: middle;
+      }
+      .sequence .lane-pipe { fill: var(--pipe-line); }
+      .sequence .lane-saga, .sequence .lane-schedule { fill: var(--ink-dim); }
+      .sequence .clickable { cursor: pointer; }
+
+      .sequence .band { fill: transparent; }
+      .sequence .row.clickable:hover .band { fill: var(--package); }
+      .sequence .arrow { stroke: var(--ink-dim); stroke-width: 1.4; }
+      .sequence .head { fill: var(--ink-dim); }
+      .sequence .mark { fill: var(--ink-dim); }
+      .sequence .clock { stroke: var(--line); stroke-dasharray: 2 4; }
+      .sequence .label { fill: var(--ink); font: 11px var(--mono); }
+      .sequence .label.dim { fill: var(--ink-dim); }
+      .sequence .note { fill: var(--ink-dim); font: 10px var(--mono); }
+
+      /* A failure has to read differently from a success here too. */
+      .sequence .row.bad .arrow { stroke: var(--warn); }
+      .sequence .row.bad .head { fill: var(--warn); }
+      .sequence .row.bad .mark { fill: var(--warn); }
+      .sequence .row.bad .label { fill: var(--warn); }
+
+      /* A real gap in the clock, with how long it was. */
+      .sequence .gap { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; }
+      .sequence .gapLabel { fill: var(--warn); font: 10px var(--mono); text-anchor: end; }
+
+      .sequence .row.dimmed { opacity: 0.25; }
+      .sequence .row.emphasised .arrow { stroke: var(--accent); stroke-width: 2.2; }
+      .sequence .row.emphasised .head { fill: var(--accent); }
+      .sequence .row.emphasised .label { fill: var(--accent); font-weight: 600; }
+      /* Where playback has reached. */
+      .sequence .row.current .band { fill: var(--service); }
+
       #sidebar {
         position: absolute;
         top: 12px;
@@ -277,6 +332,8 @@
         display: none;
       }
       #sidebar.open { display: block; }
+      /* Out of the drawer's way, since both live on the right. */
+      body.sequence-open #sidebar { right: calc(min(620px, 62%) + 12px); }
       #sidebar h2 { font-size: 13px; margin: 0 0 8px; word-break: break-all; }
       #sidebar dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
       #sidebar dt { color: var(--ink-dim); }
@@ -333,6 +390,9 @@
       <h1>7K Spider</h1>
       <button type="button" id="find" title="find anything (Ctrl-K)">find&hellip;</button>
       <button type="button" id="problemsCount" title="what the checker says"></button>
+      <button type="button" id="toggleSequence" title="the sequence diagram (s)" hidden>
+        sequence
+      </button>
       <span id="status">loading…</span>
       <span id="focus" hidden>
         focus <b id="focusName"></b>
@@ -359,6 +419,7 @@
         />
         <ul id="paletteList"></ul>
       </div>
+      <aside id="sequence" hidden></aside>
       <aside id="sidebar"></aside>
       <div id="problems">
         <button type="button" id="problemsClose" title="close">&times;</button>

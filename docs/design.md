@@ -456,11 +456,87 @@ lights up during a replay is what would light up if you had clicked the thing yo
 
 ### 5.5 Still missing
 
-The **sequence diagram** (increment 3), which is where dense interleaving becomes readable in a way a
-moving picture cannot be. And a **dead-letter pipe has no edges**, so it floats beside its own pipe: fine
+A **dead-letter pipe has no edges**, so it floats beside its own pipe: fine
 as an annotation, and it would need an edge that breaks the bipartite rule to be more.
 
-## 6. Increments
+## 6. The sequence diagram
+
+Increment 3. `s`, or the **sequence** button, once a trace is loaded.
+
+### 6.1 Pipes are lifelines, not arrows
+
+The conventional thing would be one arrow per hop, service to service, labelled with the message. It would
+read better and it would be a lie in two directions.
+
+It would **invent causality.** One `published` and three `delivered` events are four facts; joining them
+into three service-to-service arrows asserts that *this* publish caused *those* deliveries. The trace does
+not say that, and competing consumers on a queue make it false. A delivery whose publish is in another run
+would have to be drawn as coming from nowhere, or dropped.
+
+And it would **hide the waiting.** A message sitting in a queue is the single most interesting thing a
+message-driven system does, and it is exactly what vanishes when the queue is drawn as the middle of an
+arrow.
+
+So the queue is a participant, at the cost of two arrows per hop. What that buys shows up immediately on a
+real trace — `ReserveNeverAnswers`, read down the page:
+
+```
+  +5.0s   failed      ReserveSeats      <- the ack timeout elapsing
+  +1.0s   delivered   ReserveSeats      <- the first retry
+  +5.0s   failed      ReserveSeats
+  +2.0s   delivered   ReserveSeats      <- backoff doubling
+  +5.0s   failed      ReserveSeats
+  +4.0s   delivered   ReserveSeats
+  +5.0s   failed      ReserveSeats
+```
+
+The ack timeout and the retry backoff are both visible as vertical distance on the pipe's lifeline. Neither
+is visible at all in a diagram where the pipe is an arrow.
+
+A **dead letter folds into the pipe it belongs to** rather than getting a lifeline, for the same reason the
+graph draws it as an annotation: a participant that only ever receives is not a participant.
+
+A **saga** and a **schedule** get lanes of their own, and their events are marks on the lifeline rather
+than arrows, because they happened *to* a participant without travelling. The clock moving gets no
+participant at all — a faint rule across the diagram. On the shop trace that is 3–4 marks per run beside
+11–19 arrows.
+
+### 6.2 Rows are event-paced; gaps are marked
+
+The same decision as the transport (5.1), and for the same reason: virtual time clusters, so a
+proportional diagram would push everything off the screen to make room for one wait. A row per event, and a
+real gap gets a divider saying how long it was — `+24.0h` on the nightly schedule, `+5.0s` on an ack
+timeout.
+
+`sayGap` scales the units, because a queue's whole character is how long things sit in it and
+`2592000000ms` says nothing.
+
+### 6.3 A drawer, not a pane
+
+It takes the right-hand edge, full height, over the graph. The graph is the view you keep; the sequence is
+the one you open when a trace is the question. Opening it squeezes the viewport and **does not re-lay out
+the graph**, so nothing moves underneath.
+
+The sidebar steps aside, since both live on the right.
+
+### 6.4 The linkage, finally
+
+D25's "selecting in one view highlights in all three" is now actually three views, and it turned out to
+mean less code rather than more: there is **one** `resolve`, and each view renders the `Highlight` it is
+handed.
+
+- Clicking a row seeks the transport to that event, which highlights it in the graph **and** animates the
+  message along its edge.
+- Clicking a lane heading selects that service or pipe, which highlights its rows in the sequence.
+- A replay drives both: what lights up as a trace plays is what would light up if you had clicked the
+  thing yourself.
+
+There was never a second resolver to keep in step, which is exactly what section 2.2 was for.
+
+Drawn with plain SVG and no library. The graph needed Cytoscape for layout and hit testing; a grid of lines
+whose coordinates `layoutSequence` has already computed needs neither.
+
+## 7. Increments
 
 Each one is useful on its own, and none is a prerequisite rewrite of the one before.
 
@@ -468,7 +544,9 @@ Each one is useful on its own, and none is a prerequisite rewrite of the one bef
 2. **Replay** — a trace animated over the graph, with the timeline as its transport. **Done**, see
    section 5. Swapped with the sequence diagram: it reuses the graph and the selection model that already
    exist, and it shows a message-driven system *behaving* rather than listing what it did.
-3. **Sequence** — a trace rendered as a sequence diagram.
+3. **Sequence** — a trace as a sequence diagram, with the three views linked. **Done**, see section 6.
+   This absorbed the old "linked selection" increment, because linking three views turned out to be one
+   `resolve` and no new machinery.
 4. **Composer, read-only** — build a message from a record's fields and see it validated.
 5. **Mutation** — editing the model from the graph.
 
@@ -476,7 +554,7 @@ Read-only first, and mutation last, because the authoring experience already exi
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
 
-## 7. Rendering
+## 8. Rendering
 
 **Cytoscape.js**, with layout from **ELK** through `cytoscape-elk` (D92).
 
@@ -495,7 +573,7 @@ rather than composing nodes from components:
   generated image rather than markup. Free for the first increment, which is boxes and labels, and
   not free later.
 
-## 8. Host
+## 9. Host
 
 A **local web app**, served by a command. The renderer goes in a package that knows nothing about its
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a
