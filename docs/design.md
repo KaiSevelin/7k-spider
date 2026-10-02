@@ -155,21 +155,109 @@ responds and one that stutters.
 
 A re-parse builds a new join; selections carry over untouched.
 
-## 3. Increments
+## 3. The graph
+
+Increment 1. Services, pipes, packages and the boundary, with no trace.
+
+### 3.1 It is bipartite: services and pipes, never service to service
+
+A message is an edge **label**, not a node.
+
+That mirrors the model exactly. A service declares `emits M to p` and `reacts M from p`, and nothing in
+7K says "service A calls service B" — so an A-to-B edge would assert a coupling the language
+deliberately does not have. Loose coupling is the thing being described; drawing it away in the first
+picture would be an odd way to start.
+
+Two consequences that look like omissions and are not:
+
+- "What talks to OrderService" takes two edges to answer rather than one. That is the honest answer:
+  both services are coupled to a *pipe*, and either can be replaced without the other knowing.
+- Several messages between one service and one pipe collapse into **one edge with several labels**. Six
+  messages to one pipe are one relationship, and six parallel curves would say otherwise while also
+  being unreadable.
+
+But two **named subscriptions** of one service on one pipe stay two edges. `as <name>` exists to tell a
+fast path from a slow batch path (`03-topology.md` 2.4), and collapsing them would throw away the only
+thing that distinguishes them. The edge id is `from -> to`, which is what `layout.json` keys an edge by,
+and gains a `#<subscription>` suffix only where it must — so the ordinary edge keeps the layout file's
+spelling.
+
+### 3.2 Only declared packages get a box
+
+`acme.retail.sales` implies `acme` and `acme.retail` in the model. Neither gets drawn.
+
+A package is "the namespace, the ownership boundary and the unit of contract at once"
+(`03-topology.md`), and an implied one is none of those — it is a naming prefix. A box around it would
+claim an owner nobody wrote. `PackageIr.declared` exists for exactly this distinction.
+
+So nesting **skips** an implied level: a declared `acme.a.b` sits directly inside a declared `acme`,
+labelled `a.b` rather than wrapped in an invented `a`. A declaration whose own package is undeclared
+goes in the nearest declared ancestor, because it still belongs somewhere — floating it outside every
+box would read as "not in a package" rather than "this package was never declared".
+
+An empty package is left out too. It survives in the model, because it was declared, but an empty box
+suggests something is missing from the picture rather than from the package.
+
+### 3.3 What a node shows without being asked
+
+Shape carries structure, because colour is already carrying boundary and selection:
+
+| | |
+|---|---|
+| queue, topic, stream | rectangle, hexagon, barrel — a queue competes, a topic fans out, a stream is a log |
+| `@external` service | a dashed tag, not a service. 7K describes no behaviour for one; drawing it solid would claim otherwise |
+| a boundary pipe | a thick accent border. Derived from the `@external` marking, never declared (`03-topology.md` 1.6) |
+| `delivery at-most-once` | dashed. It may lose a message, so nothing may depend on it for progress — the sort of thing a reader should not have to hover to find out |
+| a dead-letter pipe | dotted and muted, and off by default. It is what you turn on when looking at a failure |
+| anything unresolved | a doubled warning border, because a half-written model is normal (D20) and a graph that vanished while you typed would be useless at the moment you need it |
+
+### 3.4 Layout
+
+ELK's `layered` algorithm, flowing down the page, fed nodes and edges in declaration order.
+
+D25 makes stability matter more than optimality, which rules out force-directed layout outright: a
+graph that reshuffles whenever the model changes is the named failure, not a side effect. Nothing
+animates on a relayout either — an animated reshuffle is a reshuffle you watched happen.
+
+[`test/layout.test.ts`](../test/layout.test.ts) asserts this against real Cytoscape and real ELK,
+headlessly: the same model lays out identically twice, and **adding a service leaves the rest of the
+graph where it was**. That last one is the requirement in a single test, and a force-directed layout
+fails it outright.
+
+`collect` sorts the files it finds for the same reason. A graph seeded by a directory listing would
+differ between two machines looking at one repository.
+
+### 3.5 What is not here yet
+
+**Ports are not drawn as connection points.** D92 planned for boundary ports as child nodes on a
+parent's perimeter, because Cytoscape has no port concept. At increment 1's edge density an edge
+meeting a node's border is unambiguous, so the workaround is not yet earning its complexity. An
+`@external` service is drawn as a boundary marker in its own right, which is the thing a reader is
+looking for.
+
+**`layout.json` is not read.** Reading it is read-only and belongs here eventually, with the rule that
+matters most: a node missing from the file is laid out **on its own**, never by re-running layout for
+the whole view. Writing it is mutation, which is increment 5.
+
+**Nothing is verified by looking except the picture.** The graph's derivation, the layout's stability,
+the stylesheet's validity, the server and the page-to-script contract are all tested. How it *looks* is
+checked by running it.
+
+## 4. Increments
 
 Each one is useful on its own, and none is a prerequisite rewrite of the one before.
 
-1. **Graph.** Services, pipes, packages, boundary ports. No trace.
-2. **Sequence.** A trace rendered as a sequence diagram.
-3. **Linked selection and timeline.** The selection model above, wired to all three views.
-4. **Composer, read-only.** Build a message from a record's fields and see it validated.
-5. **Mutation.** Editing the model from the graph.
+1. **Graph** — services, pipes, packages, the boundary. No trace. **Done**, see section 3.
+2. **Sequence** — a trace rendered as a sequence diagram.
+3. **Linked selection and timeline** — the selection model wired to all three views.
+4. **Composer, read-only** — build a message from a record's fields and see it validated.
+5. **Mutation** — editing the model from the graph.
 
 Read-only first, and mutation last, because the authoring experience already exists in the extension
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
 
-## 4. Rendering
+## 5. Rendering
 
 **Cytoscape.js**, with layout from **ELK** through `cytoscape-elk` (D92).
 
@@ -188,7 +276,7 @@ rather than composing nodes from components:
   generated image rather than markup. Free for the first increment, which is boxes and labels, and
   not free later.
 
-## 5. Host
+## 6. Host
 
 A **local web app**, served by a command. The renderer goes in a package that knows nothing about its
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>7K Spider</title>
+    <style>
+      /* Tokens, so dark mode is a redefinition rather than a second stylesheet. */
+      :root {
+        --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+        --bg: #fbfbfa;
+        --surface: #ffffff;
+        --ink: #1b1b1a;
+        --ink-dim: #6b6b67;
+        --line: #c9c7c1;
+        --accent: #1a5fb4;
+        --warn: #b4610a;
+        --service: #eef3fb;
+        --service-line: #7a9cc6;
+        --pipe: #f4f1ea;
+        --pipe-line: #b3a98e;
+        --port: #fbf3ee;
+        --port-line: #c69a7a;
+        --package: #f2f1ee;
+        --boundary: #c67a3e;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #17181a;
+          --surface: #202225;
+          --ink: #e6e5e2;
+          --ink-dim: #9a9892;
+          --line: #43454a;
+          --accent: #78aeff;
+          --warn: #e0923c;
+          --service: #1e2733;
+          --service-line: #4a6d99;
+          --pipe: #262420;
+          --pipe-line: #6e6450;
+          --port: #2b2320;
+          --port-line: #8a6a52;
+          --package: #1d1e21;
+          --boundary: #c67a3e;
+        }
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.5 var(--mono);
+        height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+        flex-wrap: wrap;
+      }
+
+      h1 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: 0.02em; }
+
+      #status { color: var(--ink-dim); }
+      #status.bad { color: var(--warn); }
+
+      label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-dim); }
+
+      main { position: relative; min-height: 0; }
+      #graph { position: absolute; inset: 0; }
+
+      #sidebar {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: min(340px, calc(100% - 24px));
+        max-height: calc(100% - 24px);
+        overflow: auto;
+        padding: 12px 14px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        display: none;
+      }
+      #sidebar.open { display: block; }
+      #sidebar h2 { font-size: 13px; margin: 0 0 8px; word-break: break-all; }
+      #sidebar dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+      #sidebar dt { color: var(--ink-dim); }
+      #sidebar dd { margin: 0; word-break: break-all; }
+
+      #problems {
+        position: absolute;
+        bottom: 12px;
+        left: 12px;
+        max-width: min(560px, calc(100% - 24px));
+        max-height: 40%;
+        overflow: auto;
+        padding: 10px 12px;
+        background: var(--surface);
+        border: 1px solid var(--warn);
+        border-radius: 6px;
+        color: var(--warn);
+        display: none;
+        white-space: pre-wrap;
+      }
+      #problems.open { display: block; }
+
+      @media (max-width: 640px) {
+        #sidebar { position: static; width: auto; margin: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>7K Spider</h1>
+      <span id="status">loading…</span>
+      <label><input type="checkbox" id="packages" checked /> packages</label>
+      <label><input type="checkbox" id="ports" checked /> ports</label>
+      <label><input type="checkbox" id="dead" /> dead letters</label>
+    </header>
+    <main>
+      <div id="graph"></div>
+      <aside id="sidebar"></aside>
+      <pre id="problems"></pre>
+    </main>
+    <script src="/bundle.js"></script>
+  </body>
+</html>

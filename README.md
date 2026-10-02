@@ -9,18 +9,27 @@ a conforming implementation.
 
 ## Status
 
-Early. The **selection model** is built and tested: the contract that makes "selecting in one view
-highlights in all three" mean something, since the three views show different kinds of thing. None of
-the views exist yet.
+The **graph** works. Services, pipes, packages and the boundary, laid out so that it holds still.
 
 ```
 npm install
-npm test        # 21 tests
+npm run serve ../7K/examples     # then open http://127.0.0.1:7007
+```
+
+It watches the files, so editing a `.7k` redraws the page — and because the layout is deterministic,
+the parts you did not change stay where they were.
+
+```
+npm test        # 65 tests
 npm run build
 ```
 
-Read [`docs/design.md`](docs/design.md) first. It settles the selection model, the increments, and
-what Spider is allowed to know.
+The sequence and timeline views do not exist yet. The **selection model** that will link all three is
+built and tested, and the graph already uses it: clicking a node resolves a selection through the same
+one function the other two views will.
+
+Read [`docs/design.md`](docs/design.md) first. It settles the selection model, what the graph draws and
+why, the increments, and what Spider is allowed to know.
 
 ## What it reads
 
@@ -43,6 +52,26 @@ drift.
 
 A trace is optional. The graph is worth drawing before anything has run.
 
+## What the graph draws
+
+**It is bipartite: services and pipes, never service to service.** A message is an edge *label*, not a
+node. Nothing in 7K says "service A calls service B", so an A-to-B edge would assert a coupling the
+language deliberately does not have — and loose coupling is the thing being described.
+
+**The layout holds still.** ELK's layered algorithm, fed declarations in order. D25 makes stability
+matter more than optimality, which rules out force-directed layout outright: a graph that reshuffles
+whenever the model changes is the named failure, not a side effect. There is a test that adds a service
+and asserts the rest of the graph did not move.
+
+**A node says what matters without being asked.** A lossy pipe is dashed, because nothing may depend on
+it for progress. A boundary pipe is bordered, derived from the `@external` marking rather than declared.
+An unresolved reference is drawn, not hidden — a half-written model is normal, and a graph that vanished
+while you typed would be useless at the moment you need it.
+
+**Only declared packages get a box.** `acme.retail.sales` implies `acme` and `acme.retail`; neither is
+drawn, because an implied package is a naming prefix rather than an ownership boundary, and a box would
+claim an owner nobody wrote.
+
 ## The idea the whole thing rests on
 
 **The trace is the join.** A trace event already names its message, its pipe and its service, plus a
@@ -63,7 +92,7 @@ From there, three rules:
 
 ## Increments
 
-1. **Graph** — services, pipes, packages, boundary ports. No trace.
+1. **Graph** — services, pipes, packages, the boundary. No trace. **Done.**
 2. **Sequence** — a trace as a sequence diagram.
 3. **Linked selection and timeline** — the selection model wired to all three views.
 4. **Composer, read-only** — build a message and watch it validated.
