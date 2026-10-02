@@ -81,6 +81,37 @@ export async function collect(paths: readonly string[]): Promise<string[]> {
  * Merged across roots, first one winning a name clash, and absent is not an error: "deleting this file
  * loses saved lenses and nothing else" (`20-ir.md` 6.1).
  */
+/** Reads one sidecar out of `.7k/`, merged across roots. Absent is `{}`, not an error. */
+export async function readSidecar(
+  paths: readonly string[],
+  name: string,
+): Promise<string> {
+  const merged: Record<string, unknown> = {};
+  for (const path of paths) {
+    const info = await stat(path).catch(() => undefined);
+    if (info === undefined) continue;
+    const root = info.isFile() ? dirname(path) : path;
+    let text: string;
+    try {
+      text = await readFile(joinPath(root, ".7k", name), "utf-8");
+    } catch {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (!(k in merged)) merged[k] = v;
+        }
+      }
+    } catch {
+      // Handed over as it is, so the page reports the parse failure rather than the server hiding it.
+      return text;
+    }
+  }
+  return JSON.stringify(merged);
+}
+
 export async function readViews(
   paths: readonly string[],
 ): Promise<{ text: string; problems: readonly string[] }> {
@@ -202,6 +233,15 @@ export async function serve(options: ServeOptions): Promise<Serving> {
       }
       const text = await readFile(tracePath, "utf-8");
       res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      res.end(text);
+      return;
+    }
+
+    if (url.pathname === "/forms.json") {
+      // Per-developer and gitignored, unlike views.json, so an absent file is the normal case — and it
+      // changes nothing, because every key in it is an override (`20-ir.md` 6.3).
+      const text = await readSidecar(paths, "forms.json");
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
       res.end(text);
       return;
     }

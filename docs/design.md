@@ -536,7 +536,86 @@ There was never a second resolver to keep in step, which is exactly what section
 Drawn with plain SVG and no library. The graph needed Cytoscape for layout and hit testing; a grid of lines
 whose coordinates `layoutSequence` has already computed needs neither.
 
-## 7. Increments
+## 7. The composer
+
+Increment 4. `c`, or the **compose** button.
+
+Pick a message or a record, fill in a form, and watch it validated against the contract. Read-only in the
+sense that matters: it builds a payload and tells you whether it is one. Sending it is a runtime's job.
+
+### 7.1 The form is derived, never configured
+
+A widget comes from the field's kernel type and its constraints. There is no table of known facets, and
+that is the whole point (D24): declare
+
+```
+value PostCode : string { pattern /^[0-9]{3} [0-9]{2}$/; example "114 51" }
+```
+
+and the composer offers a text box that checks that pattern and shows `114 51` as its placeholder, having
+been told nothing about post codes. A declared `example` beats any placeholder a tool could invent.
+
+`forms.json` may override a **label**, an **order** or a **widget**, and nothing else. The order is
+partial, so adding a field does not require editing the sidecar to keep it from disappearing. A widget
+name is advisory — an unrecognised one falls back to the derived widget, which stops the sidecar becoming
+a UI API every tool must implement.
+
+**It carries no validation hints, ever**, and that is enforced rather than documented: a `pattern`,
+`length`, `range`, `required` or `constraints` key is reported as a problem. Constraints belong to the
+model, and a second copy in a presentation file is a second source of truth that drifts
+(`20-ir.md` 6.3).
+
+One place a constraint changes the *kind* of input rather than what it accepts: a `string` whose `length`
+allows more than 120 characters gets a textarea, because a 2000-character field in a one-line box is a
+form nobody can fill in. A `decimal` gets a **text** box, not a number one, because it travels as a string
+and must not round-trip through a double (`01-kernel.md` 7.1).
+
+A `map<K,V>` gets free key/value pairs, deliberately unstructured, because it is an unversioned extension
+point and a form that pretended otherwise would be claiming a contract that does not exist (D91).
+
+### 7.2 Validation is Core's, not a projection of it
+
+This is the decision that made increment 4 bigger than it looked, and it forced the work in 7k's D97.
+
+The obvious shortcut is to validate against the JSON Schema the projection already generates. It would be
+wrong, because **the projection is lossy by design** (D90): no invariants, no nominal types. A composer
+built on it would accept
+
+```
+total:  { amount: "19.99", currency: "SEK" }
+lines: [{ amount: "19.99", currency: "EUR" }]
+```
+
+as a valid order, when the model declares `invariant total.currency == lines[].currency`. It would not
+merely miss the problem; it would have no way to express that it was missing one.
+
+So validation comes from `@sevenk/core`, which makes the composer exactly as strict as `7k check` — the
+only useful thing for it to be. That meant moving contract semantics out of the sandbox, where they had
+lived because the sandbox was the first thing to need them. Spider would have been the second
+implementation.
+
+**Normalize, then validate**, which is the order a runtime uses: `normalize trim` means a value with
+spaces around it *is* the trimmed value, so validating first would reject a payload the contract accepts.
+
+**Canonical JSON only while it is valid.** Canonical JSON of something that is not a legal payload would
+be a confident artifact about something nobody agreed on.
+
+### 7.3 Blank, not invented
+
+An empty form has every required field present and empty, and no optional one. Nothing is filled in with a
+plausible value, because a composer that did that is one you stop reading — and `"$auto"` generation
+belongs to a runtime with a seed, not to a form.
+
+The one exception is an enum, where the first member is the only honest blank: there is no empty enum
+value.
+
+### 7.4 What a half-written model looks like
+
+A field whose type did not resolve is **drawn**, named, and marked as unresolved. A form that vanished
+while you were typing a type name would be useless at the moment you need it (D20) — the same rule the
+graph follows.
+
+## 8. Increments
 
 Each one is useful on its own, and none is a prerequisite rewrite of the one before.
 
@@ -547,14 +626,14 @@ Each one is useful on its own, and none is a prerequisite rewrite of the one bef
 3. **Sequence** — a trace as a sequence diagram, with the three views linked. **Done**, see section 6.
    This absorbed the old "linked selection" increment, because linking three views turned out to be one
    `resolve` and no new machinery.
-4. **Composer, read-only** — build a message from a record's fields and see it validated.
+4. **Composer, read-only** — build a message and watch it validated. **Done**, see section 7.
 5. **Mutation** — editing the model from the graph.
 
 Read-only first, and mutation last, because the authoring experience already exists in the extension
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
 
-## 8. Rendering
+## 9. Rendering
 
 **Cytoscape.js**, with layout from **ELK** through `cytoscape-elk` (D92).
 
@@ -573,7 +652,7 @@ rather than composing nodes from components:
   generated image rather than markup. Free for the first increment, which is boxes and labels, and
   not free later.
 
-## 9. Host
+## 10. Host
 
 A **local web app**, served by a command. The renderer goes in a package that knows nothing about its
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a

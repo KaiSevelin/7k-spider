@@ -113,8 +113,6 @@
 
       #position { color: var(--ink-dim); min-width: 7.5em; text-align: right; }
 
-      select {
-
       header {
         display: flex;
         align-items: center;
@@ -318,6 +316,93 @@
       /* Where playback has reached. */
       .sequence .row.current .band { fill: var(--service); }
 
+      /* The same drawer shape as the sequence: the graph is the view you keep. */
+      #compose {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(520px, 58%);
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-left: 1px solid var(--line);
+        box-shadow: -6px 0 18px rgb(0 0 0 / 10%);
+      }
+      #compose[hidden] { display: none; }
+
+      .panelHead {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .panelHead select { flex: 1; }
+      #composeState { color: var(--ink-dim); white-space: nowrap; }
+      #composeState.bad { color: var(--warn); }
+      #composeState.good { color: var(--accent); }
+      .panelHead button {
+        font: inherit;
+        color: var(--ink-dim);
+        background: none;
+        border: 0;
+        cursor: pointer;
+        padding: 2px 5px;
+        border-radius: 3px;
+      }
+      .panelHead button:hover { background: var(--package); }
+
+      #composeForm { flex: 1; overflow: auto; padding: 10px; }
+      #composeOut {
+        margin: 0;
+        max-height: 34%;
+        overflow: auto;
+        padding: 8px 10px;
+        border-top: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--ink-dim);
+        white-space: pre-wrap;
+        font: 11px/1.45 var(--mono);
+      }
+
+      /* A row per field: label, input, and whatever the model says about it. */
+      .f { margin: 0 0 8px; }
+      .f > label { display: block; color: var(--ink-dim); margin-bottom: 2px; }
+      .f > label .req { color: var(--warn); }
+      .f > label .key { color: var(--accent); }
+      .f input[type="text"], .f input[type="number"], .f textarea, .f select {
+        width: 100%;
+        font: inherit;
+        color: var(--ink);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 3px 6px;
+      }
+      .f textarea { min-height: 3.4em; resize: vertical; }
+      .f .hint { color: var(--ink-dim); font-size: 10px; }
+      /* What the contract says is wrong, beside the field it is wrong about. */
+      .f .bad { color: var(--warn); font-size: 10px; }
+      .f.invalid input, .f.invalid textarea, .f.invalid select { border-color: var(--warn); }
+
+      /* A nested record, indented under its own heading rather than flattened away. */
+      .group { border-left: 2px solid var(--line); padding-left: 8px; margin: 0 0 8px; }
+      .group > .groupName { color: var(--ink); font-weight: 600; margin-bottom: 4px; }
+      .listItem { display: flex; gap: 6px; align-items: flex-start; margin-bottom: 4px; }
+      .listItem > div { flex: 1; }
+      .rowBtn {
+        font: inherit;
+        color: var(--ink-dim);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        cursor: pointer;
+        padding: 1px 7px;
+      }
+      .rowBtn:hover { color: var(--ink); }
+      .unknownField { color: var(--warn); font-size: 11px; }
+
       #sidebar {
         position: absolute;
         top: 12px;
@@ -334,6 +419,7 @@
       #sidebar.open { display: block; }
       /* Out of the drawer's way, since both live on the right. */
       body.sequence-open #sidebar { right: calc(min(620px, 62%) + 12px); }
+      body.compose-open #sidebar { right: calc(min(520px, 58%) + 12px); }
       #sidebar h2 { font-size: 13px; margin: 0 0 8px; word-break: break-all; }
       #sidebar dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
       #sidebar dt { color: var(--ink-dim); }
@@ -393,6 +479,7 @@
       <button type="button" id="toggleSequence" title="the sequence diagram (s)" hidden>
         sequence
       </button>
+      <button type="button" id="toggleCompose" title="build a message (c)">compose</button>
       <span id="status">loading…</span>
       <span id="focus" hidden>
         focus <b id="focusName"></b>
@@ -420,6 +507,15 @@
         <ul id="paletteList"></ul>
       </div>
       <aside id="sequence" hidden></aside>
+      <aside id="compose" hidden>
+        <header class="panelHead">
+          <select id="composeWhat" title="what to build"></select>
+          <span id="composeState"></span>
+          <button type="button" id="composeClose" title="close">&times;</button>
+        </header>
+        <div id="composeForm"></div>
+        <pre id="composeOut"></pre>
+      </aside>
       <aside id="sidebar"></aside>
       <div id="problems">
         <button type="button" id="problemsClose" title="close">&times;</button>

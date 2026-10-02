@@ -18,13 +18,13 @@ npm run serve ../7K/examples -- --trace run.ndjson  # and watch a trace play ove
 ```
 
 Then open http://127.0.0.1:7007. `Space` plays, arrows step, `s` opens the sequence diagram,
-`Ctrl-K` finds things, `f` focuses.
+`c` the composer, `Ctrl-K` finds things, `f` focuses.
 
 It watches the files, so editing a `.7k` redraws the page — and because the layout is deterministic,
 the parts you did not change stay where they were.
 
 ```
-npm test        # 176 tests
+npm test        # 201 tests
 npm run build
 ```
 
@@ -111,6 +111,19 @@ real trace and the ack timeout and the retry backoff are plain:
 Selecting in one view highlights in all three, which turned out to be *less* code rather than more: one
 `resolve`, and each view renders what it is handed.
 
+## Building a message
+
+`c` opens the composer. Pick a message, fill in a form, watch it validated.
+
+**The form is derived, never configured.** Declare a value with a pattern and an example and you get a
+text box that checks the pattern and shows the example, having told the composer nothing. `forms.json` may
+override a label, an order or a widget — and carries no validation hints ever, which is enforced rather
+than documented.
+
+**Validation comes from Core, not from the JSON Schema projection.** The projection is lossy by design, so
+a composer built on one would accept a payload breaking an `invariant` and have no way to say it had
+missed something. Validating against Core makes the composer exactly as strict as `7k check`.
+
 ## Three ways to narrow what you are looking at
 
 A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived
@@ -158,7 +171,7 @@ From there, three rules:
 1. **Graph** — services, pipes, packages, the boundary. No trace. **Done.**
 2. **Replay** — a trace animated over the graph, timeline as transport. **Done.**
 3. **Sequence** — a sequence diagram, with all three views linked. **Done.**
-4. **Composer, read-only** — build a message and watch it validated.
+4. **Composer, read-only** — build a message and watch it validated. **Done.**
 5. **Mutation** — editing the model from the graph.
 
 Read-only first and mutation last, because the authoring experience already exists in the

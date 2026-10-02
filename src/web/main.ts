@@ -37,6 +37,16 @@ import { nodeFor, renderGraph, type Rendered } from "../render.js";
 import { createPlayer, positions, runsOf, type Player, type Run } from "../play.js";
 import { buildIndex, search, type Entry, type Hit } from "../search.js";
 import { renderSequence, type SequenceView } from "../sequence-view.js";
+import {
+  blank,
+  check,
+  composable,
+  formOf,
+  parseForms,
+  type Form,
+  type Forms,
+} from "../compose.js";
+import { renderForm } from "./compose-ui.js";
 import { join, readTrace, resolve, type Selection, type SelectionId, type TraceEvent } from "../selection.js";
 
 interface Sources {
@@ -59,6 +69,10 @@ const track = el("track");
 const playhead = el("playhead");
 const position = el("position");
 const sequencePanel = el("sequence");
+const composePanel = el("compose");
+const composeWhat = el<HTMLSelectElement>("composeWhat");
+const composeState = el("composeState");
+const composeOut = el<HTMLPreElement>("composeOut");
 const lensPicker = el<HTMLSelectElement>("lens");
 const focusChip = el("focus");
 const focusName = el("focusName");
@@ -94,6 +108,11 @@ let runs: readonly Run[] = [];
 let trace: readonly TraceEvent[] = [];
 let player: Player | undefined;
 let sequence: SequenceView | undefined;
+let forms: Forms = {};
+let formProblems: readonly string[] = [];
+/** The form being filled in, and the payload being built. Reset when the declaration changes. */
+let composing: Form | undefined;
+let payload: Record<string, import("@sevenk/core").JsonValue> = {};
 
 const EVERYTHING_LABEL = "everything";
 
@@ -333,6 +352,7 @@ function toggleSequence(force?: boolean): void {
   sequencePanel.hidden = !open;
   document.body.classList.toggle("sequence-open", open);
   if (open) {
+    toggleCompose(false);
     sequence?.update(trace);
     applyHighlight();
     sequence?.cursor(cursorKey());
@@ -450,6 +470,79 @@ function makePlayer(): void {
   if (!sequencePanel.hidden) sequence.update(trace);
 
   refreshTransport();
+}
+
+// ---- compose ---------------------------------------------------------------
+
+function fillComposable(): void {
+  if (model === undefined) return;
+  const chosen = composeWhat.value;
+  composeWhat.replaceChildren();
+  for (const decl of composable(model)) {
+    const option = document.createElement("option");
+    option.value = `${decl.id.kind}:${decl.id.pkg}.${decl.id.name}`;
+    option.textContent = `${decl.id.kind} ${decl.id.name}`;
+    composeWhat.append(option);
+  }
+  composeWhat.value = [...composeWhat.options].some((o) => o.value === chosen)
+    ? chosen
+    : (composeWhat.options[0]?.value ?? "");
+}
+
+/** Validates what has been typed and redraws the form, so every problem sits beside its own field. */
+function recheck(): void {
+  if (model === undefined || composing === undefined) return;
+
+  const decl = model.decls.find(
+    (d) => `${d.id.kind}:${d.id.pkg}.${d.id.name}` === composing!.id,
+  );
+  if (decl === undefined) return;
+
+  const result = check(model, decl, payload);
+
+  const byPath = new Map<string, string[]>();
+  for (const problem of result.problems) {
+    const at = problem.path === "(root)" ? "" : problem.path;
+    byPath.set(at, [...(byPath.get(at) ?? []), problem.message]);
+  }
+
+  composeState.textContent =
+    result.problems.length === 0
+      ? "valid"
+      : `${result.problems.length} problem${result.problems.length === 1 ? "" : "s"}`;
+  composeState.classList.toggle("good", result.problems.length === 0);
+  composeState.classList.toggle("bad", result.problems.length > 0);
+
+  // Canonical JSON only when it is valid, and whatever is wrong at the root otherwise — an invariant
+  // reports against the record it is declared on, which is not any one field.
+  composeOut.textContent =
+    result.canonical ?? (byPath.get("")?.join("\n") ?? "fill in the fields above");
+
+  renderForm(el("composeForm"), composing, payload, { problems: byPath, onChange: recheck });
+}
+
+function startComposing(): void {
+  if (model === undefined) return;
+  const decl = model.decls.find(
+    (d) => `${d.id.kind}:${d.id.pkg}.${d.id.name}` === composeWhat.value,
+  );
+  if (decl === undefined) return;
+  composing = formOf(model, decl, forms);
+  // Blank, not invented: a form filled with plausible values is one you stop reading.
+  payload = blank(composing.fields);
+  recheck();
+}
+
+function toggleCompose(force?: boolean): void {
+  const open = force ?? composePanel.hidden;
+  composePanel.hidden = !open;
+  document.body.classList.toggle("compose-open", open);
+  if (open) {
+    // One drawer at a time: both take the right-hand edge, and two would overlay each other.
+    toggleSequence(false);
+    if (composing === undefined) startComposing();
+    else recheck();
+  }
 }
 
 // ---- search ----------------------------------------------------------------
@@ -576,6 +669,7 @@ function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[
     ...unresolved.map((u) => `unresolved  ${u}`),
     ...lensProblems.map((p) => `views.json  ${p}`),
     ...traceProblems.map((p) => `trace  ${p}`),
+    ...formProblems.map((p) => `forms.json  ${p}`),
     ...warnings.map((d) => `warning  ${whereIs(d)}  ${d.code}: ${d.message}`),
   ];
   problemsText.textContent = lines.join("\n");
@@ -585,6 +679,7 @@ function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[
   if (unresolved.length > 0) counts.push(`${unresolved.length} unresolved`);
   if (lensProblems.length > 0) counts.push(`${lensProblems.length} in views.json`);
   if (traceProblems.length > 0) counts.push(`${traceProblems.length} in the trace`);
+  if (formProblems.length > 0) counts.push(`${formProblems.length} in forms.json`);
   if (warnings.length > 0) counts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
 
   // "no problems" rather than nothing, for the same reason an empty loss profile is still written out in
@@ -667,10 +762,11 @@ function fillLenses(): void {
 }
 
 async function load(): Promise<void> {
-  const [sourcesResponse, viewsResponse, traceResponse] = await Promise.all([
+  const [sourcesResponse, viewsResponse, traceResponse, formsResponse] = await Promise.all([
     fetch("/sources.json"),
     fetch("/views.json"),
     fetch("/trace.ndjson"),
+    fetch("/forms.json"),
   ]);
 
   if (!sourcesResponse.ok) {
@@ -697,8 +793,18 @@ async function load(): Promise<void> {
     traceProblems = [];
   }
 
+  if (formsResponse.ok) {
+    const parsed = parseForms(await formsResponse.text());
+    forms = parsed.forms;
+    formProblems = parsed.problems;
+  }
+
   fillRuns();
   draw((await sourcesResponse.json()) as Sources);
+  fillComposable();
+  // A re-parse rebuilds the form against the new model, keeping whatever has been typed: the payload is
+  // data, and only the declaration it is checked against changed.
+  if (composing !== undefined) startComposing();
   selectRun();
 }
 
@@ -728,6 +834,9 @@ paletteInput.addEventListener("keydown", (e) => {
 });
 
 el("toggleSequence").addEventListener("click", () => toggleSequence());
+el("toggleCompose").addEventListener("click", () => toggleCompose());
+el("composeClose").addEventListener("click", () => toggleCompose(false));
+composeWhat.addEventListener("change", startComposing);
 el("run").addEventListener("change", () => selectRun());
 el("playPause").addEventListener("click", () => player?.toggle());
 el("stepOn").addEventListener("click", () => player?.step(1));
@@ -785,6 +894,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "f" || e.key === "F") toggleFocus();
   if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
+  if (e.key === "c" || e.key === "C") toggleCompose();
   if (e.key === " ") {
     player?.toggle();
     e.preventDefault();
