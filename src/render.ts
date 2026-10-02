@@ -41,12 +41,26 @@ export interface RenderOptions {
   readonly onFocus?: (id: SelectionId) => void;
 }
 
+/** What a message looks like going past. */
+export interface Send {
+  /** The edge to animate along. */
+  readonly edge: SelectionId;
+  /** Wall milliseconds for the trip. */
+  readonly durationMs: number;
+  /** True for a failure, a rejection, a dead letter — the events worth watching for. */
+  readonly bad?: boolean;
+}
+
 export interface Rendered {
   readonly cy: Core;
   /** Emphasises what a selection resolved to, and dims everything else. */
   highlight(h: Highlight | undefined): void;
   /** Replaces the graph in place, keeping the viewport. */
   update(graph: Graph): void;
+  /** Animates one message along one edge. Does nothing if that edge is not drawn. */
+  send(send: Send): void;
+  /** Removes anything still in flight, for a seek or a redraw. */
+  clearSends(): void;
   destroy(): void;
 }
 
@@ -230,6 +244,43 @@ export const STYLE: cytoscape.StylesheetJson = [
     },
   },
   { selector: 'edge[incomplete = "yes"]', style: { "line-style": "dashed", "line-color": "var(--warn)" } },
+  // ---- a message going past -------------------------------------------------
+  //
+  // The edge itself pulses, so the path is legible even when the dot is between two nodes, and a dot
+  // travels along it, so the direction is. Together they read as traffic; either alone reads as a
+  // flicker.
+  {
+    selector: "edge.sending",
+    style: {
+      "line-color": "var(--accent)",
+      "target-arrow-color": "var(--accent)",
+      width: 3,
+      "line-style": "dashed",
+      "line-dash-pattern": [6, 4],
+      "z-index": 20,
+    },
+  },
+  {
+    // A failure has to read differently from a success, or the interesting events are the ones you
+    // cannot see. These are the events worth watching a trace for.
+    selector: "edge.sending-bad",
+    style: { "line-color": "var(--warn)", "target-arrow-color": "var(--warn)" },
+  },
+  {
+    selector: "node.marker",
+    style: {
+      shape: "ellipse",
+      width: 11,
+      height: 11,
+      label: "",
+      "background-color": "var(--accent)",
+      "border-width": 0,
+      "z-index": 30,
+      events: "no",
+    },
+  },
+  { selector: "node.marker.bad", style: { "background-color": "var(--warn)" } },
+
   // Dimming is a class on everything else rather than a style on the selection, so that an empty
   // highlight leaves the graph at full strength instead of dimming all of it.
   { selector: ".dimmed", style: { opacity: 0.22 } },
@@ -274,6 +325,69 @@ export function renderGraph(
     cy.on("dbltap", "node", (e) => onFocus(e.target.id() as SelectionId));
   }
 
+  // Markers are transient nodes. They are excluded from the highlight and removed before any update, so
+  // nothing that is merely in flight can be selected, dimmed, or left behind by a redraw.
+  let markerSeq = 0;
+  const inFlight = new Set<string>();
+
+  const clearSends = (): void => {
+    cy.batch(() => {
+      for (const id of inFlight) cy.getElementById(id).remove();
+      inFlight.clear();
+      cy.edges().removeClass("sending sending-bad");
+    });
+  };
+
+  const send = ({ edge: edgeId, durationMs, bad }: Send): void => {
+    const edge = cy.getElementById(edgeId);
+    if (edge.empty() || !edge.isEdge()) return;
+
+    const source = edge.source();
+    const target = edge.target();
+    if (source.empty() || target.empty()) return;
+
+    edge.addClass(bad === true ? "sending sending-bad" : "sending");
+
+    const id = `marker:${markerSeq++}`;
+    const from = source.position();
+    const to = target.position();
+    // The point the curve actually passes through at its midpoint. Interpolating straight from source to
+    // target would send the dot off a bezier and read as broken; the control point is off-curve, so it is
+    // the wrong waypoint. `midpoint()` is on it.
+    let via: { x: number; y: number };
+    try {
+      via = edge.midpoint();
+      if (!Number.isFinite(via.x) || !Number.isFinite(via.y)) throw new Error("no midpoint");
+    } catch {
+      via = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    }
+
+    cy.add({ group: "nodes", data: { id }, position: { ...from }, classes: bad === true ? "marker bad" : "marker" });
+    inFlight.add(id);
+
+    const marker = cy.getElementById(id);
+    const half = Math.max(30, durationMs / 2);
+    const finish = (): void => {
+      marker.remove();
+      inFlight.delete(id);
+      edge.removeClass("sending sending-bad");
+    };
+
+    // Two linear segments through the midpoint, which tracks a simple bezier closely enough that the dot
+    // stays on the line. Linear rather than eased, because a message in flight is not accelerating.
+    marker.animate(
+      { position: via },
+      {
+        duration: half,
+        easing: "linear",
+        complete: () => {
+          if (!inFlight.has(id)) return;
+          marker.animate({ position: { ...to } }, { duration: half, easing: "linear", complete: finish });
+        },
+      },
+    );
+  };
+
   const highlight = (h: Highlight | undefined): void => {
     cy.batch(() => {
       cy.elements().removeClass("dimmed emphasised");
@@ -305,7 +419,7 @@ export function renderGraph(
         .union(wanted.ancestors())
         .union(wanted.connectedEdges().connectedNodes());
 
-      cy.elements().difference(context).addClass("dimmed");
+      cy.elements().difference(context).not(".marker").addClass("dimmed");
       wanted.addClass("emphasised");
     });
   };
@@ -313,7 +427,11 @@ export function renderGraph(
   return {
     cy,
     highlight,
+    send,
+    clearSends,
     update(next) {
+      // Nothing in flight survives a redraw: a marker left behind would be a message that never arrived.
+      clearSends();
       // Kept in place rather than rebuilt, so the viewport survives a keystroke. The layout re-runs,
       // which is deterministic, so an unchanged part of the model lands where it was.
       const pan = cy.pan();

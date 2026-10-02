@@ -54,8 +54,66 @@
         font: 13px/1.5 var(--mono);
         height: 100vh;
         display: grid;
-        grid-template-rows: auto 1fr;
+        /* header, graph, timeline. The timeline is a strip rather than a third pane because it is the
+           time *control* for the other views, not a peer of them. */
+        grid-template-rows: auto 1fr auto;
       }
+
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border-top: 1px solid var(--line);
+        background: var(--surface);
+      }
+      footer[hidden] { display: none; }
+
+      footer button {
+        font: inherit;
+        line-height: 1;
+        color: var(--ink);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 3px 8px;
+        cursor: pointer;
+      }
+      footer button:hover { border-color: var(--ink-dim); }
+
+      /* Drawn in virtual time, which the transport deliberately does not follow: a thirty-day wait and a
+         millisecond must not look the same, and that is the whole point of a timeline. */
+      #track {
+        position: relative;
+        flex: 1;
+        height: 18px;
+        background: var(--package);
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        cursor: pointer;
+        overflow: hidden;
+      }
+      #track .tick {
+        position: absolute;
+        top: 3px;
+        width: 1px;
+        height: 12px;
+        background: var(--line);
+      }
+      #track .tick.gap { background: var(--warn); height: 16px; top: 1px; }
+      #track .tick.done { background: var(--ink-dim); }
+      #playhead {
+        position: absolute;
+        top: 0;
+        width: 2px;
+        height: 100%;
+        background: var(--accent);
+        left: 0;
+      }
+
+      #position { color: var(--ink-dim); min-width: 7.5em; text-align: right; }
+
+      select {
 
       header {
         display: flex;
@@ -224,22 +282,46 @@
       #sidebar dt { color: var(--ink-dim); }
       #sidebar dd { margin: 0; word-break: break-all; }
 
+      /* Opened on demand. Six warnings on a clean model meant this used to float over the graph
+         permanently, competing with the sidebar; honesty needs a count you cannot miss, not a panel
+         you cannot close. */
       #problems {
         position: absolute;
         bottom: 12px;
         left: 12px;
-        max-width: min(560px, calc(100% - 24px));
+        max-width: min(620px, calc(100% - 24px));
         max-height: 40%;
         overflow: auto;
-        padding: 10px 12px;
+        padding: 10px 30px 10px 12px;
         background: var(--surface);
-        border: 1px solid var(--warn);
+        border: 1px solid var(--line);
         border-radius: 6px;
-        color: var(--warn);
         display: none;
-        white-space: pre-wrap;
       }
       #problems.open { display: block; }
+      #problemsText {
+        margin: 0;
+        white-space: pre-wrap;
+        font: inherit;
+        color: var(--ink-dim);
+      }
+      #problemsClose {
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        font: inherit;
+        color: var(--ink-dim);
+        background: none;
+        border: 0;
+        cursor: pointer;
+        padding: 2px 5px;
+        border-radius: 3px;
+      }
+      #problemsClose:hover { background: var(--package); }
+
+      /* An error is a different kind of news from a warning, and the button says which. */
+      #problemsCount.errors { color: var(--warn); border-color: var(--warn); }
+      #problemsCount.clean { color: var(--ink-dim); }
 
       @media (max-width: 640px) {
         #sidebar { position: static; width: auto; margin: 12px; }
@@ -250,6 +332,7 @@
     <header>
       <h1>7K Spider</h1>
       <button type="button" id="find" title="find anything (Ctrl-K)">find&hellip;</button>
+      <button type="button" id="problemsCount" title="what the checker says"></button>
       <span id="status">loading…</span>
       <span id="focus" hidden>
         focus <b id="focusName"></b>
@@ -277,8 +360,26 @@
         <ul id="paletteList"></ul>
       </div>
       <aside id="sidebar"></aside>
-      <pre id="problems"></pre>
+      <div id="problems">
+        <button type="button" id="problemsClose" title="close">&times;</button>
+        <pre id="problemsText"></pre>
+      </div>
     </main>
+    <footer id="timeline" hidden>
+      <select id="run" title="which run" hidden></select>
+      <button type="button" id="playPause" title="play or pause (Space)">&#9654;</button>
+      <button type="button" id="stepBack" title="previous event (&larr;)">&#8249;</button>
+      <button type="button" id="stepOn" title="next event (&rarr;)">&#8250;</button>
+      <div id="track" title="click to seek"><div id="playhead"></div></div>
+      <span id="position"></span>
+      <select id="speed" title="playback speed">
+        <option value="0.5">0.5&times;</option>
+        <option value="1" selected>1&times;</option>
+        <option value="2">2&times;</option>
+        <option value="4">4&times;</option>
+        <option value="8">8&times;</option>
+      </select>
+    </footer>
     <script src="/bundle.js"></script>
   </body>
 </html>

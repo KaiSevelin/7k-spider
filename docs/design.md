@@ -376,13 +376,99 @@ examples, `SeatsReserved` lights two.
 **Collapsing a package.** `layout.json` has a `collapsed` list and the aggregation is the same `restrict`
 plus ports, so the hard part is already built.
 
-## 5. Increments
+## 5. Replay: the timeline as a transport
+
+Increment 2. `spider serve <paths> --trace <file>`.
+
+A trace is **optional and separate from the sources**. The graph is worth drawing before anything has run,
+and a model and a recording of it running are different inputs. No trace is a *state*, not a failure — the
+server answers `204`, and the timeline simply is not there.
+
+### 5.1 Virtual time is not wall time
+
+A scenario runs on a clock where `advance 30d` is instant and many events share one instant, because the
+runtime drains everything due now before moving. So mapping virtual milliseconds onto wall milliseconds
+fails at both ends: a thirty-day advance would stall the animation for a simulated month, and nine events
+at one instant would all fire in a single frame and read as one.
+
+Playback is therefore **event-paced**: one beat per event, at a rate you choose. A real gap in the clock
+earns **exactly one extra beat** and a mark, however large it was — compressed rather than ignored, so the
+passing of time is visible without being waited out.
+
+**The timeline is not paced that way.** It is drawn in *virtual* time, with the gaps at their true size,
+because a month and a millisecond looking the same would lose the one thing a timeline is for. The
+transport compresses; the track tells the truth. On a real sandbox trace: a 1.0s virtual span, 31s of
+playback, 15 gaps marked.
+
+Seeking is by virtual time too, so a click lands where it was aimed rather than at the nth event.
+
+### 5.2 A file holds several runs
+
+The sandbox's own `trace --ndjson` across several scenarios writes one run each, which is why an event's
+identity is `(run, seq)` and not `seq` (`30-scenarios.md` 7.2).
+
+They **cannot be played as one sequence**, and this was not obvious until measured. Each run starts its
+clock where it likes, so a track drawn across all of them overlays run two on run one: seven runs, and 27
+of 59 events inside the first 1% of the track. So there is a run picker, shown only when there is more than
+one, and a trace is read one run at a time — which is how you read a bug report anyway.
+
+### 5.3 What a message looks like going past
+
+Both at once, because either alone reads as a flicker:
+
+- **The edge pulses** — accent-coloured, thicker, with a dashed pattern — so the path is legible even while
+  the dot is between two nodes.
+- **A dot travels along it**, so the direction is.
+
+The dot follows `edge.midpoint()`, which is a point the curve actually passes through. Interpolating
+straight from source to target sends it off a bezier and reads as broken; the bezier's *control* point is
+off-curve, so it is the wrong waypoint too.
+
+A **failure animates differently** — warn-coloured, for a rejection, a failure, a dead letter, a drop, a
+compensation. Those are the events a trace is usually opened for, and a failure that looked like a success
+would be one you never notice.
+
+Markers are transient nodes excluded from selection, from dimming, and from surviving a redraw: a marker
+left behind would be a message that never arrived.
+
+**This does not contradict D25.** "Nothing animates on a relayout" stays true. Layout does not move;
+messages do.
+
+### 5.4 Which edge an event travelled
+
+A trace names a message, a pipe and a service, all qualified (`30-scenarios.md` 7.6), and the graph's edges
+are exactly those pairs — so this is a lookup rather than a guess. On a real trace, **53 of 59 events**
+animate along an edge.
+
+Three cases worth stating:
+
+- **A dead letter** names the `<pipe>.dead` companion, which the graph draws without edges — it annotates
+  its pipe rather than participating. So the event animates along the delivery edge it died on, marked bad,
+  which is both truthful and what a reader wants to see.
+- **A port**, when the counterparty is outside the lens or focus. The message really did go out of view,
+  and animating to the port says so; the alternative is a message that silently does not appear.
+- **No edge at all** for a saga event, a schedule firing, the clock moving, or a publish by the scenario
+  itself. Returned as nothing rather than forced onto a nearby edge. The six events of the real trace with
+  no edge are all `advanced` — the clock moving, which travelled nowhere.
+
+An event with no edge still highlights what it touched, through the same `resolve` a click uses. So what
+lights up during a replay is what would light up if you had clicked the thing yourself.
+
+### 5.5 Still missing
+
+The **sequence diagram** (increment 3), which is where dense interleaving becomes readable in a way a
+moving picture cannot be. And a **dead-letter pipe has no edges**, so it floats beside its own pipe: fine
+as an annotation, and it would need an edge that breaks the bipartite rule to be more.
+
+## 6. Increments
 
 Each one is useful on its own, and none is a prerequisite rewrite of the one before.
 
 1. **Graph** — services, pipes, packages, the boundary. No trace. **Done**, see section 3.
-2. **Sequence** — a trace rendered as a sequence diagram.
-3. **Linked selection and timeline** — the selection model wired to all three views.
+2. **Replay** — a trace animated over the graph, with the timeline as its transport. **Done**, see
+   section 5. Swapped with the sequence diagram: it reuses the graph and the selection model that already
+   exist, and it shows a message-driven system *behaving* rather than listing what it did.
+3. **Sequence** — a trace rendered as a sequence diagram.
 4. **Composer, read-only** — build a message from a record's fields and see it validated.
 5. **Mutation** — editing the model from the graph.
 
@@ -390,7 +476,7 @@ Read-only first, and mutation last, because the authoring experience already exi
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
 
-## 6. Rendering
+## 7. Rendering
 
 **Cytoscape.js**, with layout from **ELK** through `cytoscape-elk` (D92).
 
@@ -409,7 +495,7 @@ rather than composing nodes from components:
   generated image rather than markup. Free for the first increment, which is boxes and labels, and
   not free later.
 
-## 7. Host
+## 8. Host
 
 A **local web app**, served by a command. The renderer goes in a package that knows nothing about its
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a

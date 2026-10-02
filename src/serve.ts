@@ -22,6 +22,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export interface ServeOptions {
   /** Files and directories to read `.7k` sources from. */
   readonly paths: readonly string[];
+  /**
+   * An NDJSON trace to replay over the graph.
+   *
+   * Optional, and separate from `paths`, because a trace is not a source: the graph is worth drawing
+   * before anything has run, and a model and a recording of it running are different inputs.
+   */
+  readonly trace?: string;
   readonly port?: number;
   readonly host?: string;
   /** Rebuild and notify the page when a source changes. On by default. */
@@ -31,6 +38,8 @@ export interface ServeOptions {
 export interface Serving {
   readonly url: string;
   readonly port: number;
+  /** The trace file being served, if any. */
+  readonly trace?: string;
   /** The source files currently being served. */
   files(): Promise<readonly { path: string; source: string }[]>;
   close(): Promise<void>;
@@ -121,6 +130,7 @@ const MIME: Record<string, string> = {
 
 export async function serve(options: ServeOptions): Promise<Serving> {
   const paths = options.paths.map((p) => resolvePath(p));
+  const tracePath = options.trace === undefined ? undefined : resolvePath(options.trace);
   const wantWatch = options.watch !== false;
 
   const entry = joinPath(HERE, "web", "main.ts");
@@ -179,6 +189,20 @@ export async function serve(options: ServeOptions): Promise<Serving> {
       res.write(": open\n\n");
       listeners.add(res);
       req.on("close", () => listeners.delete(res));
+      return;
+    }
+
+    if (url.pathname === "/trace.ndjson") {
+      if (tracePath === undefined) {
+        // 204 rather than 404: there is no trace *and that is fine*. The graph is the first increment and
+        // has never needed one, so a missing trace is a state rather than a failure.
+        res.writeHead(204, { "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      const text = await readFile(tracePath, "utf-8");
+      res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
+      res.end(text);
       return;
     }
 
@@ -254,6 +278,15 @@ export async function serve(options: ServeOptions): Promise<Serving> {
         watchers.push(watch(root, changed));
       }
     }
+    // The trace, so re-running a scenario shows up without a reload.
+    if (tracePath !== undefined) {
+      try {
+        watchers.push(watch(tracePath, changed));
+      } catch {
+        /* a trace that is not there yet is not an error */
+      }
+    }
+
     // The renderer's own sources, so editing Spider refreshes the page it is drawing.
     try {
       watchers.push(watch(HERE, { recursive: true }, changed));
@@ -271,6 +304,7 @@ export async function serve(options: ServeOptions): Promise<Serving> {
   return {
     url: `http://${host}:${actual}/`,
     port: actual,
+    ...(tracePath === undefined ? {} : { trace: tracePath }),
     files,
     async close() {
       for (const w of watchers) w.close();

@@ -13,14 +13,17 @@ The **graph** works. Services, pipes, packages and the boundary, laid out so tha
 
 ```
 npm install
-npm run serve ../7K/examples     # then open http://127.0.0.1:7007
+npm run serve ../7K/examples                        # the graph
+npm run serve ../7K/examples -- --trace run.ndjson  # and watch a trace play over it
 ```
+
+Then open http://127.0.0.1:7007. `Space` plays, arrows step, `Ctrl-K` finds things, `f` focuses.
 
 It watches the files, so editing a `.7k` redraws the page — and because the layout is deterministic,
 the parts you did not change stay where they were.
 
 ```
-npm test        # 131 tests
+npm test        # 154 tests
 npm run build
 ```
 
@@ -72,6 +75,20 @@ while you typed would be useless at the moment you need it.
 drawn, because an implied package is a naming prefix rather than an ownership boundary, and a box would
 claim an owner nobody wrote.
 
+## Watching a trace
+
+Point it at an NDJSON trace and the messages move. The edge pulses so the path is legible, a dot travels so
+the direction is, and a failure — a rejection, a dead letter, a compensation — animates differently,
+because those are the events you opened the trace for.
+
+Playback is **event-paced**, because virtual time is not wall time: a scenario where `advance 30d` is
+instant would otherwise stall for a simulated month. A real gap earns one extra beat and a mark. The
+**timeline** is drawn in virtual time with the gaps at their true size, because that is the one thing a
+timeline is for — so the transport compresses and the track tells the truth.
+
+A trace file routinely holds several runs, which cannot be played as one: each starts its clock where it
+likes. There is a run picker.
+
 ## Three ways to narrow what you are looking at
 
 A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived
@@ -117,8 +134,8 @@ From there, three rules:
 ## Increments
 
 1. **Graph** — services, pipes, packages, the boundary. No trace. **Done.**
-2. **Sequence** — a trace as a sequence diagram.
-3. **Linked selection and timeline** — the selection model wired to all three views.
+2. **Replay** — a trace animated over the graph, timeline as transport. **Done.**
+3. **Sequence** — a trace as a sequence diagram.
 4. **Composer, read-only** — build a message and watch it validated.
 5. **Mutation** — editing the model from the graph.
 

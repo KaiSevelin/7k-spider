@@ -401,5 +401,98 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
 export const marksOfNode = (node: GraphNode): ReadonlySet<string> =>
   new Set([...node.labels, ...node.annotations]);
 
+// ---- trace events on the graph ----------------------------------------------
+
+/** Kinds that move a message *onto* a pipe. Everything else with a pipe is taking one off. */
+const OUTBOUND = new Set(["published", "schedule-fired", "saga-compensating"]);
+
+/**
+ * Kinds worth seeing differently.
+ *
+ * These are the events a trace is usually opened for, and a failure that animates identically to a
+ * success is a failure you will not notice.
+ */
+const BAD = new Set([
+  "rejected",
+  "failed",
+  "dead-lettered",
+  "dropped",
+  "filtered",
+  "deduplicated",
+  "saga-timeout",
+  "saga-rejected",
+  "saga-abandoned",
+  "saga-compensating",
+]);
+
+export const isBadEvent = (kind: string): boolean => BAD.has(kind);
+
+/**
+ * The edge a trace event travelled along, if the graph draws one.
+ *
+ * A trace names a message, a pipe and a service (`30-scenarios.md` 7.6, all qualified); the graph's edges
+ * are exactly those pairs, so this is a lookup rather than a guess.
+ *
+ * Three things it has to cope with:
+ *
+ * A **dead letter** names the `<pipe>.dead` companion, and the graph draws that node without edges — it
+ * annotates its pipe rather than participating. So a dead-lettered event animates along the delivery edge
+ * it died on, marked bad, which is both truthful and the thing a reader wants to see.
+ *
+ * A **port**, when the counterparty is outside the current lens or focus. The message really did go out of
+ * view, and animating to the port says so; the alternative is a message that silently does not appear.
+ *
+ * **No edge at all**, for a saga or schedule event, or a publish by the scenario itself. Those are
+ * returned as undefined rather than forced onto some nearby edge.
+ */
+export function edgeForEvent(
+  graph: Graph,
+  event: {
+    readonly kind: string;
+    readonly pipe?: string;
+    readonly service?: string;
+    readonly subscription?: string;
+  },
+): GraphEdge | undefined {
+  if (event.pipe === undefined) return undefined;
+
+  // A dead letter is drawn as an annotation of its pipe, so the event belongs to the pipe it came from.
+  const pipeName = event.pipe.endsWith(".dead")
+    ? event.pipe.slice(0, -".dead".length)
+    : event.pipe;
+
+  const pipeNode = graph.nodes.find((n) => n.kind === "pipe" && n.qname === pipeName);
+  if (pipeNode === undefined) return undefined;
+
+  const outbound = OUTBOUND.has(event.kind);
+
+  if (event.service !== undefined) {
+    const serviceNode = graph.nodes.find(
+      (n) => (n.kind === "service" || n.kind === "external") && n.qname === event.service,
+    );
+    if (serviceNode !== undefined) {
+      const from = outbound ? serviceNode.id : pipeNode.id;
+      const to = outbound ? pipeNode.id : serviceNode.id;
+      const candidates = graph.edges.filter((e) => e.from === from && e.to === to);
+      if (candidates.length > 0) {
+        // `as <name>` can give one service two subscriptions on one pipe, and then only the name tells
+        // them apart.
+        return (
+          candidates.find((e) => e.subscription === event.subscription) ?? candidates[0]
+        );
+      }
+    }
+  }
+
+  // The counterparty is out of view, so the message went through a port. Honest, and the only
+  // alternative is a message that does not appear at all.
+  return graph.edges.find((e) =>
+    outbound ? e.to === pipeNode.id && isPortId(e.from) : e.from === pipeNode.id && isPortId(e.to),
+  );
+}
+
+/** Local, to keep `graph.ts` from depending on the narrowing it is an input to. */
+const isPortId = (id: string): boolean => id.startsWith("port:");
+
 /** Every node id in a graph, which is what a layout file is checked against. */
 export const nodeIds = (graph: Graph): SelectionId[] => graph.nodes.map((n) => n.id);

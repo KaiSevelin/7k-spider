@@ -17,8 +17,14 @@
  * Conflating any two of them is how a filter becomes something you cannot switch off.
  */
 
-import { buildWorkspace, hasErrors, type Diagnostic, type LinkedModel } from "@sevenk/core";
-import { buildGraph, type Graph, type GraphOptions } from "../graph.js";
+import {
+  buildWorkspace,
+  hasErrors,
+  lineColOf,
+  type Diagnostic,
+  type LinkedModel,
+} from "@sevenk/core";
+import { edgeForEvent, isBadEvent, buildGraph, type Graph, type GraphOptions } from "../graph.js";
 import {
   applyFocus,
   DEFAULT_RADIUS,
@@ -28,8 +34,9 @@ import {
 } from "../focus.js";
 import { EVERYTHING, isPort, parseViews, resolveLens, type Lens, type Views } from "../lens.js";
 import { nodeFor, renderGraph, type Rendered } from "../render.js";
+import { createPlayer, positions, runsOf, type Player, type Run } from "../play.js";
 import { buildIndex, search, type Entry, type Hit } from "../search.js";
-import { join, resolve, type Selection, type SelectionId } from "../selection.js";
+import { join, readTrace, resolve, type Selection, type SelectionId, type TraceEvent } from "../selection.js";
 
 interface Sources {
   readonly files: readonly { readonly path: string; readonly source: string }[];
@@ -43,7 +50,13 @@ const el = <T extends HTMLElement>(id: string): T => {
 
 const status = el("status");
 const sidebar = el("sidebar");
-const problems = el<HTMLPreElement>("problems");
+const problems = el("problems");
+const problemsText = el<HTMLPreElement>("problemsText");
+const problemsCount = el("problemsCount");
+const timeline = el("timeline");
+const track = el("track");
+const playhead = el("playhead");
+const position = el("position");
 const lensPicker = el<HTMLSelectElement>("lens");
 const focusChip = el("focus");
 const focusName = el("focusName");
@@ -61,12 +74,23 @@ let view: Rendered | undefined;
 let selection: Selection = { k: "none" };
 let views: Views = {};
 let lensProblems: readonly string[] = [];
+let traceProblems: readonly string[] = [];
 /** Transient, and never written anywhere: that is what makes it safe to be aggressive. */
 let focus: Focus = NOT_FOCUSED;
 /** Over the model, not the graph: a message is a label rather than a node, and people search for one. */
 let index: readonly Entry[] = [];
 let hits: readonly Hit[] = [];
 let cursor = 0;
+/** What the sources said, kept so a diagnostic can be shown with its line and column. */
+let sourceOf = new Map<string, string>();
+/** Errors open the panel once, by themselves. A warning count never does. */
+let announcedErrors = false;
+/** The trace, if one was given. Optional by design: the graph is worth drawing before anything has run. */
+/** Every run the file holds. A file routinely holds several, and they cannot be played as one. */
+let runs: readonly Run[] = [];
+/** The run being replayed. */
+let trace: readonly TraceEvent[] = [];
+let player: Player | undefined;
 
 const EVERYTHING_LABEL = "everything";
 
@@ -276,6 +300,99 @@ function setRadius(by: number): void {
   redraw();
 }
 
+// ---- replay ----------------------------------------------------------------
+
+/** Draws the track: one tick per event, in **virtual** time, with the gaps at their true size. */
+function drawTrack(): void {
+  const at = positions(trace);
+  const beats = player?.beats ?? [];
+  const shown = player?.at ?? -1;
+
+  track.replaceChildren(playhead);
+  at.forEach((fraction, i) => {
+    const tick = document.createElement("div");
+    tick.className = "tick";
+    if (beats[i]?.gap === true) tick.classList.add("gap");
+    if (i <= shown) tick.classList.add("done");
+    tick.style.left = `${(fraction * 100).toFixed(3)}%`;
+    track.append(tick);
+  });
+
+  playhead.style.left = `${((at[Math.max(0, shown)] ?? 0) * 100).toFixed(3)}%`;
+  playhead.hidden = shown < 0;
+}
+
+function refreshTransport(): void {
+  if (player === undefined) return;
+  el("playPause").textContent = player.playing ? "\u23F8" : "\u25B6";
+  const shown = player.at;
+  const event = shown >= 0 ? trace[shown] : undefined;
+  position.textContent =
+    event === undefined
+      ? `0 / ${trace.length}`
+      : `${shown + 1} / ${trace.length}  ${event.kind}`;
+  drawTrack();
+}
+
+/**
+ * Shows one trace event: the message going along its edge, and the declarations it touched lit up.
+ *
+ * An event with no edge — a saga step, a schedule firing, the clock moving — still highlights what it
+ * touched. There is simply nothing travelling, which is the truth about it.
+ */
+function showEvent(event: TraceEvent): void {
+  if (graph === undefined || model === undefined || view === undefined) return;
+
+  const edge = edgeForEvent(graph, event);
+  if (edge !== undefined) {
+    view.send({
+      edge: edge.id,
+      durationMs: 360,
+      ...(isBadEvent(event.kind) ? { bad: true } : {}),
+    });
+  }
+
+  // The same `resolve` every view uses, so what lights up during a replay is what would light up if you
+  // had clicked the thing yourself.
+  view.highlight(resolve(join(model, trace), { k: "event", run: event.run, seq: event.seq }));
+}
+
+function fillRuns(): void {
+  const picker = el<HTMLSelectElement>("run");
+  // Hidden for a single run, because a picker with one option is furniture.
+  picker.hidden = runs.length < 2;
+  if (picker.hidden) return;
+
+  const chosen = picker.value;
+  picker.replaceChildren();
+  for (const { run, events } of runs) {
+    const option = document.createElement("option");
+    option.value = run;
+    option.textContent = `${run}  (${events.length})`;
+    picker.append(option);
+  }
+  picker.value = runs.some((r) => r.run === chosen) ? chosen : (runs[0]?.run ?? "");
+}
+
+function selectRun(name?: string): void {
+  const wanted = name ?? el<HTMLSelectElement>("run").value;
+  trace = runs.find((r) => r.run === wanted)?.events ?? runs[0]?.events ?? [];
+  makePlayer();
+}
+
+function makePlayer(): void {
+  player?.dispose();
+  view?.clearSends();
+  if (trace.length === 0) {
+    player = undefined;
+    timeline.hidden = true;
+    return;
+  }
+  player = createPlayer(trace, { onEvent: showEvent, onChange: refreshTransport });
+  timeline.hidden = false;
+  refreshTransport();
+}
+
 // ---- search ----------------------------------------------------------------
 
 const KIND_LABEL: Readonly<Record<string, string>> = {
@@ -375,16 +492,59 @@ function choose(at: number = cursor): void {
   select(hit.id);
 }
 
-/** Diagnostics are shown, never swallowed: a warning is usually the interesting part of a model. */
+/** `sales.7k:38:3` — where a diagnostic is, which is most of what makes one actionable. */
+function whereIs(d: Diagnostic): string {
+  const source = sourceOf.get(d.span.file);
+  const name = d.span.file.replace(/\\/g, "/").split("/").pop() ?? d.span.file;
+  if (source === undefined) return name;
+  const { line, col } = lineColOf(source, d.span.start);
+  return `${name}:${line}:${col}`;
+}
+
+/**
+ * Diagnostics are shown, never swallowed: a warning is usually the interesting part of a model.
+ *
+ * But shown as a **count** you cannot miss, with a panel you open. Six warnings on a clean model used to
+ * mean the panel floated over the graph permanently, which trains you to ignore it — and a warning you
+ * have learned to ignore is worse than one you have to click for.
+ */
 function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[]): void {
+  const errors = diagnostics.filter((d) => d.severity === "error");
+  const warnings = diagnostics.filter((d) => d.severity === "warning");
+
   const lines = [
-    ...diagnostics.filter((d) => d.severity === "error").map((d) => `error  ${d.code}: ${d.message}`),
+    ...errors.map((d) => `error    ${whereIs(d)}  ${d.code}: ${d.message}`),
     ...unresolved.map((u) => `unresolved  ${u}`),
     ...lensProblems.map((p) => `views.json  ${p}`),
-    ...diagnostics.filter((d) => d.severity === "warning").map((d) => `warning  ${d.code}: ${d.message}`),
+    ...traceProblems.map((p) => `trace  ${p}`),
+    ...warnings.map((d) => `warning  ${whereIs(d)}  ${d.code}: ${d.message}`),
   ];
-  problems.textContent = lines.join("\n");
-  problems.classList.toggle("open", lines.length > 0);
+  problemsText.textContent = lines.join("\n");
+
+  const counts: string[] = [];
+  if (errors.length > 0) counts.push(`${errors.length} error${errors.length === 1 ? "" : "s"}`);
+  if (unresolved.length > 0) counts.push(`${unresolved.length} unresolved`);
+  if (lensProblems.length > 0) counts.push(`${lensProblems.length} in views.json`);
+  if (traceProblems.length > 0) counts.push(`${traceProblems.length} in the trace`);
+  if (warnings.length > 0) counts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
+
+  // "no problems" rather than nothing, for the same reason an empty loss profile is still written out in
+  // a projected schema: an absence is a claim, and a reader should be able to tell it from a check that
+  // never ran.
+  problemsCount.textContent = counts.length === 0 ? "no problems" : counts.join(" · ");
+  problemsCount.classList.toggle("errors", errors.length > 0);
+  problemsCount.classList.toggle("clean", counts.length === 0);
+
+  if (counts.length === 0) problems.classList.remove("open");
+
+  // An error means names did not resolve, which is worth interrupting for — once. Re-announcing on every
+  // keystroke while you are halfway through typing a name would be the opposite of helpful.
+  if (errors.length > 0 && !announcedErrors) {
+    problems.classList.add("open");
+    announcedErrors = true;
+  } else if (errors.length === 0) {
+    announcedErrors = false;
+  }
 }
 
 /** Re-applies the lens to the graph already built. No re-parse: a lens changes only what is drawn. */
@@ -422,6 +582,7 @@ function redraw(): void {
 }
 
 function draw(sources: Sources): void {
+  sourceOf = new Map(sources.files.map((f) => [f.path, f.source]));
   const ws = buildWorkspace(sources.files.map((f) => ({ path: f.path, source: f.source })));
   model = ws.model;
   index = buildIndex(ws.model);
@@ -447,9 +608,10 @@ function fillLenses(): void {
 }
 
 async function load(): Promise<void> {
-  const [sourcesResponse, viewsResponse] = await Promise.all([
+  const [sourcesResponse, viewsResponse, traceResponse] = await Promise.all([
     fetch("/sources.json"),
     fetch("/views.json"),
+    fetch("/trace.ndjson"),
   ]);
 
   if (!sourcesResponse.ok) {
@@ -466,11 +628,27 @@ async function load(): Promise<void> {
     fillLenses();
   }
 
+  // 204 means there is no trace, which is a state and not a failure.
+  if (traceResponse.status === 200) {
+    const { events, problems } = readTrace(await traceResponse.text());
+    runs = runsOf(events);
+    traceProblems = problems.map((p) => `line ${p.line ?? "?"}: ${p.message}`);
+  } else {
+    runs = [];
+    traceProblems = [];
+  }
+
+  fillRuns();
   draw((await sourcesResponse.json()) as Sources);
+  selectRun();
 }
 
 lensPicker.addEventListener("change", redraw);
 el("find").addEventListener("click", openPalette);
+problemsCount.addEventListener("click", () => {
+  if (problemsText.textContent !== "") problems.classList.toggle("open");
+});
+el("problemsClose").addEventListener("click", () => problems.classList.remove("open"));
 paletteInput.addEventListener("input", refreshHits);
 paletteInput.addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown" || (e.key === "n" && e.ctrlKey)) {
@@ -488,6 +666,27 @@ paletteInput.addEventListener("keydown", (e) => {
     closePalette();
     e.preventDefault();
   }
+});
+
+el("run").addEventListener("change", () => selectRun());
+el("playPause").addEventListener("click", () => player?.toggle());
+el("stepOn").addEventListener("click", () => player?.step(1));
+el("stepBack").addEventListener("click", () => player?.step(-1));
+el<HTMLSelectElement>("speed").addEventListener("change", (e) => {
+  player?.setSpeed(Number((e.target as HTMLSelectElement).value));
+});
+track.addEventListener("click", (e) => {
+  if (player === undefined || trace.length === 0) return;
+  const box = track.getBoundingClientRect();
+  const fraction = Math.min(1, Math.max(0, (e.clientX - box.left) / box.width));
+  // Seeking by *virtual* time, because that is what the track draws. Seeking by index would make a click
+  // land somewhere other than where it was aimed.
+  const at = positions(trace);
+  let nearest = 0;
+  for (let i = 1; i < at.length; i++) {
+    if (Math.abs(at[i]! - fraction) < Math.abs(at[nearest]! - fraction)) nearest = i;
+  }
+  player.seek(nearest);
 });
 
 el("focusClear").addEventListener("click", toggleFocus);
@@ -525,6 +724,12 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "f" || e.key === "F") toggleFocus();
+  if (e.key === " ") {
+    player?.toggle();
+    e.preventDefault();
+  }
+  if (e.key === "ArrowRight") player?.step(1);
+  if (e.key === "ArrowLeft") player?.step(-1);
   if (e.key === "+" || e.key === "=") setRadius(1);
   if (e.key === "-" || e.key === "_") setRadius(-1);
 });

@@ -12,6 +12,7 @@ const HELP = `7k Spider — three views over a 7K model and a trace of it runnin
   spider serve <paths...>        serve the graph at http://127.0.0.1:7007
 
 Options
+  --trace <file>                 replay this NDJSON trace over the graph
   --port <n>                     listen on this port instead (0 picks a free one)
   --host <addr>                  bind to this address instead of 127.0.0.1
   --no-watch                     do not redraw when a file changes
@@ -20,7 +21,7 @@ Options
 A path may be a file or a directory; a directory is searched for \`.7k\` files, skipping
 dotted directories and node_modules.
 
-Only the graph exists so far. The sequence and the timeline are increments 2 and 3.
+With a trace, the graph animates what happened. The sequence diagram is increment 3.
 `;
 
 interface Parsed {
@@ -28,17 +29,19 @@ interface Parsed {
   readonly paths: readonly string[];
   readonly port?: number;
   readonly host?: string;
+  readonly trace?: string;
   readonly watch: boolean;
 }
 
 /** Flags that take a value, so the value is never mistaken for a path. */
-const VALUED = new Set(["--port", "--host"]);
+const VALUED = new Set(["--port", "--host", "--trace"]);
 
 export function parse(argv: readonly string[]): Parsed {
   let command: Parsed["command"] = "help";
   const paths: string[] = [];
   let port: number | undefined;
   let host: string | undefined;
+  let trace: string | undefined;
   let watch = true;
 
   for (let i = 0; i < argv.length; i++) {
@@ -61,7 +64,8 @@ export function parse(argv: readonly string[]): Parsed {
           throw new Error(`\`${value}\` is not a port`);
         }
         port = parsed;
-      } else host = value;
+      } else if (arg === "--trace") trace = value;
+      else host = value;
       continue;
     }
     if (arg.startsWith("-")) throw new Error(`unknown option \`${arg}\``);
@@ -73,6 +77,7 @@ export function parse(argv: readonly string[]): Parsed {
     paths,
     ...(port === undefined ? {} : { port }),
     ...(host === undefined ? {} : { host }),
+    ...(trace === undefined ? {} : { trace }),
     watch,
   };
 }
@@ -100,6 +105,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     paths: parsed.paths,
     ...(parsed.port === undefined ? {} : { port: parsed.port }),
     ...(parsed.host === undefined ? {} : { host: parsed.host }),
+    ...(parsed.trace === undefined ? {} : { trace: parsed.trace }),
     watch: parsed.watch,
   });
 
@@ -111,7 +117,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
 
-  process.stdout.write(`7k Spider  ${serving.url}\n${files.length} files${parsed.watch ? ", watching" : ""}\n`);
+  const what = [
+    `${files.length} files`,
+    serving.trace === undefined ? undefined : "a trace",
+    parsed.watch ? "watching" : undefined,
+  ].filter((x) => x !== undefined);
+  process.stdout.write(`7k Spider  ${serving.url}\n${what.join(", ")}\n`);
 
   const stop = (): void => {
     void serving.close().then(() => process.exit(0));
