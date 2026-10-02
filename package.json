@@ -1,0 +1,44 @@
+{
+  "name": "@sevenk/spider",
+  "version": "0.1.0",
+  "description": "Graph, sequence and timeline views over a 7K model and its traces",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KaiSevelin/7k-spider.git"
+  },
+  "homepage": "https://github.com/KaiSevelin/7k-spider#readme",
+  "bugs": {
+    "url": "https://github.com/KaiSevelin/7k-spider/issues"
+  },
+  "keywords": [
+    "7k",
+    "spider",
+    "graph",
+    "sequence-diagram",
+    "message-driven"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "typecheck": "tsc --build --force && tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@sevenk/core": "file:../7K/packages/core"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  // `tsconfig.json` builds `src`, so tests would go unchecked — and a test is where a type error is
+  // most likely to be hiding behind a cast. This checks both, and emits nothing.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
