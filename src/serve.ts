@@ -63,6 +63,55 @@ export async function collect(paths: readonly string[]): Promise<string[]> {
   return [...found].sort();
 }
 
+/**
+ * Reads `.7k/views.json` beside the model.
+ *
+ * The sidecar lives in a dotted directory, which `collect` deliberately skips when looking for models —
+ * a `.7k` file under `.7k/` would be tooling state, not a declaration. So it is looked up explicitly.
+ *
+ * Merged across roots, first one winning a name clash, and absent is not an error: "deleting this file
+ * loses saved lenses and nothing else" (`20-ir.md` 6.1).
+ */
+export async function readViews(
+  paths: readonly string[],
+): Promise<{ text: string; problems: readonly string[] }> {
+  const merged: Record<string, unknown> = {};
+  const problems: string[] = [];
+
+  for (const path of paths) {
+    const info = await stat(path).catch(() => undefined);
+    if (info === undefined) continue;
+    const root = info.isFile() ? dirname(path) : path;
+    const file = joinPath(root, ".7k", "views.json");
+    let text: string;
+    try {
+      text = await readFile(file, "utf-8");
+    } catch {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (cause) {
+      problems.push(`${file}: not JSON: ${cause instanceof Error ? cause.message : ""}`);
+      continue;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      problems.push(`${file}: not a JSON object`);
+      continue;
+    }
+    for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (name in merged) {
+        problems.push(`${file}: \`${name}\` is already defined by an earlier path`);
+        continue;
+      }
+      merged[name] = value;
+    }
+  }
+
+  return { text: JSON.stringify(merged), problems };
+}
+
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -130,6 +179,15 @@ export async function serve(options: ServeOptions): Promise<Serving> {
       res.write(": open\n\n");
       listeners.add(res);
       req.on("close", () => listeners.delete(res));
+      return;
+    }
+
+    if (url.pathname === "/views.json") {
+      const { text, problems } = await readViews(paths);
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
+      // The problems travel with the file, so a malformed sidecar is reported in the page rather than
+      // only in the terminal nobody is looking at.
+      res.end(JSON.stringify({ views: JSON.parse(text), problems }));
       return;
     }
 

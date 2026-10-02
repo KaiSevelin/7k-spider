@@ -74,6 +74,41 @@
 
       label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-dim); }
 
+      select {
+        font: inherit;
+        color: var(--ink);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 2px 6px;
+      }
+
+      #sidebar ul { margin: 6px 0 0; padding: 0; list-style: none; }
+      #sidebar li { margin: 0; }
+
+      /* A navigator, not a property dump: the graph is bipartite, so getting from one service to
+         another is deliberately two hops, and these rows are the second one. */
+      #sidebar button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        color: var(--accent);
+        background: none;
+        border: 0;
+        border-radius: 3px;
+        padding: 2px 4px;
+        cursor: pointer;
+      }
+      #sidebar button:hover { background: var(--package); }
+      #sidebar h3 {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--ink-dim);
+        margin: 10px 0 2px;
+        text-transform: lowercase;
+      }
+
       main { position: relative; min-height: 0; }
       #graph { position: absolute; inset: 0; }
 
@@ -122,8 +157,9 @@
     <header>
       <h1>7K Spider</h1>
       <span id="status">loading…</span>
+      <label for="lens">lens</label>
+      <select id="lens"></select>
       <label><input type="checkbox" id="packages" checked /> packages</label>
-      <label><input type="checkbox" id="ports" checked /> ports</label>
       <label><input type="checkbox" id="dead" /> dead letters</label>
     </header>
     <main>

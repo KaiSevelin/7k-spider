@@ -139,7 +139,7 @@ export const STYLE: cytoscape.StylesheetJson = [
   {
     // An `@external` service marks where the system ends. Dashed, because 7K describes no behaviour
     // for it, and drawing it solid would claim otherwise.
-    selector: "node.port",
+    selector: "node.external",
     style: {
       "background-color": "var(--port)",
       "border-color": "var(--port-line)",
@@ -155,6 +155,21 @@ export const STYLE: cytoscape.StylesheetJson = [
     selector: `node.kind-${kind}`,
     style: { shape },
   })),
+  {
+    // A port stands for what is out of view. Small, open-sided and unlabelled by name, so it reads as
+    // an edge going somewhere rather than as a thing in its own right.
+    selector: "node.port",
+    style: {
+      "background-color": "var(--bg)",
+      "border-color": "var(--line)",
+      "border-style": "dashed",
+      "border-width": 1,
+      shape: "round-tag",
+      color: "var(--ink-dim)",
+      "font-size": 10,
+      padding: "4px",
+    },
+  },
   {
     selector: "node.dead-letter",
     style: {

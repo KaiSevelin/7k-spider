@@ -63,6 +63,30 @@ message Ping v1.0 @event { id: uuid @role(businessKey) }
 pipe pings : topic { retention 7d }
 `;
 
+/** A model whose label propagates: field to message to the pipe carrying it. */
+const PII = `
+package acme.pii
+
+label pii
+
+message Sensitive v1.0 @command {
+  id:    uuid @role(businessKey)
+  email: string @pii
+}
+
+message Dull v1.0 @event { id: uuid @role(businessKey) }
+
+pipe inbound : queue { retention 7d }
+pipe quiet   : topic { retention 7d }
+
+service Handler {
+  reacts Sensitive from inbound {
+    replies none
+  }
+  emits Dull to quiet
+}
+`;
+
 const model = (source = MODEL): LinkedModel => {
   const ws = buildWorkspace([{ path: "shop.7k", source }]);
   expect(
@@ -154,11 +178,31 @@ describe("nodes", () => {
     );
   });
 
-  it("draws an external service as a port", () => {
-    // 7K describes no behaviour for an `@external` service, so drawing it like one it has analysed
-    // would overstate what is known.
-    expect(kindOf(graph(), "service:acme.shop.WebApp")).toBe("port");
-    expect(kindOf(buildGraph(model(), { ports: false }), "service:acme.shop.WebApp")).toBe("service");
+  it("gives an external service its own kind", () => {
+    // 7K describes no behaviour for an `@external` service — no `replies`, no retry policy, nothing a
+    // checker can reason about — so drawing it like one it has analysed would overstate what is known.
+    //
+    // Called `external` and not `port`: `20-ir.md` 6.1 means something else by a boundary port, namely
+    // the stub standing where an edge leaves a view, and one word cannot cover both.
+    expect(kindOf(graph(), "service:acme.shop.WebApp")).toBe("external");
+    expect(graph().nodes.filter((n) => n.kind === "port")).toEqual([]);
+  });
+
+  it("carries propagated labels, not only declared ones", () => {
+    // `01-kernel.md` 6 promises that a pipe carrying a PII-bearing message is PII-bearing. That is the
+    // fact a reader wants on the node, rather than that some record three hops away said so.
+    const ws = buildWorkspace([{ path: "pii.7k", source: PII }]);
+    expect(ws.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const g = buildGraph(ws.model);
+    expect(g.nodes.find((n) => n.id === "pipe:acme.pii.inbound")?.labels).toEqual(["pii"]);
+    expect(g.nodes.find((n) => n.id === "pipe:acme.pii.quiet")?.labels).toEqual([]);
+  });
+
+  it("carries annotations, which a lens also selects on", () => {
+    const g = graph();
+    expect(g.nodes.find((n) => n.id === "service:acme.shop.WebApp")?.annotations).toContain(
+      "external",
+    );
   });
 
   it("marks the boundary pipes, and only those", () => {

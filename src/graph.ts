@@ -25,9 +25,11 @@
 import {
   boundaryPipes,
   pipesOf,
+  propagatedLabels,
   qualify,
   servicesOf,
   symbolKey,
+  type Decl,
   type LinkedModel,
   type PipeIr,
   type Ref,
@@ -42,7 +44,21 @@ export type NodeKind =
   | "dead-letter"
   /** A compound node holding a package's own nodes. */
   | "package"
-  /** An `@external` service, drawn as a port on the boundary rather than as a service. */
+  /**
+   * An `@external` service: where the system ends.
+   *
+   * Its own kind rather than a service, because 7K describes no behaviour for one — no `replies`, no
+   * retry policy, nothing a checker can reason about — so drawing it identically to a service it has
+   * analysed would overstate what is known.
+   */
+  | "external"
+  /**
+   * A stub standing for everything outside the view that connects here.
+   *
+   * What `20-ir.md` 6.1 means by a boundary port: "an edge leaving the view renders as a boundary
+   * port, the same aggregation used for a collapsed package". Not a declaration, and not an
+   * `@external` service — those are two different ideas that the one word has to stop covering.
+   */
   | "port";
 
 export interface GraphNode {
@@ -55,8 +71,15 @@ export interface GraphNode {
   readonly qname: string;
   /** The compound node this sits inside, if any. */
   readonly parent?: SelectionId;
-  /** Declared labels, for a lens (`views.json` selects on `label:`). */
+  /**
+   * Labels that reach this declaration, declared **and propagated** (`01-kernel.md` 6).
+   *
+   * Propagated rather than declared, because that is the useful fact: a reader wants to know this
+   * pipe is PII-bearing, not that some record three hops away said so.
+   */
   readonly labels: readonly string[];
+  /** Annotations, which a `label:` selector also matches — they share one `@name` namespace (D95). */
+  readonly annotations: readonly string[];
   /** True when this pipe is at the system boundary (`03-topology.md` 1.6). Derived, never declared. */
   readonly boundary?: boolean;
   /** A pipe's kind, which is what its shape shows. */
@@ -71,6 +94,8 @@ export interface GraphNode {
   readonly delivery?: PipeIr["delivery"];
   /** Set when something the node refers to did not resolve, so the view can show it as incomplete. */
   readonly incomplete?: boolean;
+  /** A port only: the qualified names outside the view that it stands for. */
+  readonly hidden?: readonly string[];
 }
 
 export interface GraphEdge {
@@ -104,14 +129,6 @@ export interface GraphOptions {
    */
   readonly packages?: boolean;
   /**
-   * Draw an `@external` service as a boundary port rather than as a service.
-   *
-   * On by default. An external service is not something 7K describes the behaviour of — it marks
-   * where the system ends — so drawing it identically to a service it has analysed would overstate
-   * what is known.
-   */
-  readonly ports?: boolean;
-  /**
    * Include a pipe's dead-letter companion as a node.
    *
    * Off by default: most of the time it is noise, and it is the kind of thing a reader turns on when
@@ -138,11 +155,17 @@ const keyOfRef = (model: LinkedModel, ref: Ref): string | undefined => {
  */
 export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Graph {
   const wantPackages = options.packages !== false;
-  const wantPorts = options.ports !== false;
   const wantDeadLetters = options.deadLetters === true;
 
   const nodes: GraphNode[] = [];
   const unresolved: string[] = [];
+
+  // Computed once for the model: a lens asks about every node, so this is the cheapest place to ask.
+  const labels = propagatedLabels(model);
+  const marks = (decl: Decl): { labels: string[]; annotations: string[] } => ({
+    labels: [...(labels.get(symbolKey(decl.id.pkg, decl.id.name)) ?? [])].sort(),
+    annotations: [...decl.annotations],
+  });
   const seen = new Set<SelectionId>();
 
   const push = (node: GraphNode): void => {
@@ -196,7 +219,10 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
         label: outer === undefined ? pkg.name : pkg.name.slice(outer.length + 1),
         qname: pkg.name,
         ...(outer === undefined ? {} : { parent: packageId(outer) }),
+        // A package declares neither, and nothing propagates into one: it owns declarations rather
+        // than containing data.
         labels: [],
+        annotations: [],
       });
     }
   }
@@ -212,7 +238,7 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
       label: pipe.id.name,
       qname: qualify(pipe.id),
       ...(parentOf(pipe.id.pkg) === undefined ? {} : { parent: parentOf(pipe.id.pkg)! }),
-      labels: pipe.labels,
+      ...marks(pipe),
       ...(atBoundary.has(key) ? { boundary: true } : {}),
       pipeKind: pipe.pipeKind,
       delivery: pipe.delivery,
@@ -227,7 +253,8 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
         label: `${pipe.id.name}.dead`,
         qname: `${qualify(pipe.id)}.dead`,
         ...(parentOf(pipe.id.pkg) === undefined ? {} : { parent: parentOf(pipe.id.pkg)! }),
-        labels: pipe.labels,
+        // A dead letter carries whatever its pipe carries, so it inherits the same marks.
+        ...marks(pipe),
       });
     }
   }
@@ -236,11 +263,11 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
   for (const service of servicesOf(model)) {
     push({
       id: nodeId(service),
-      kind: wantPorts && service.external ? "port" : "service",
+      kind: service.external ? "external" : "service",
       label: service.id.name,
       qname: qualify(service.id),
       ...(parentOf(service.id.pkg) === undefined ? {} : { parent: parentOf(service.id.pkg)! }),
-      labels: service.labels,
+      ...marks(service),
     });
   }
 
@@ -365,6 +392,14 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
     unresolved,
   };
 }
+
+/**
+ * Everything a `label:` selector could match on a node: its propagated labels and its annotations.
+ *
+ * One set, because labels and annotations share the `@name` namespace (D95).
+ */
+export const marksOfNode = (node: GraphNode): ReadonlySet<string> =>
+  new Set([...node.labels, ...node.annotations]);
 
 /** Every node id in a graph, which is what a layout file is checked against. */
 export const nodeIds = (graph: Graph): SelectionId[] => graph.nodes.map((n) => n.id);
