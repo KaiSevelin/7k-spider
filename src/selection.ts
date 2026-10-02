@@ -23,59 +23,44 @@
  *
  * **A selection is an identity, never a reference.** Spider watches files and re-parses on every
  * keystroke, so a selection has to survive the model object it pointed into being discarded. It is
- * a string id, a sequence number, an instance key — never a `Decl`.
+ * a string id, an event key, an instance key — never a `Decl`.
  *
  * **The id form is the one the sidecars already use.** `service:acme.retail.sales.OrderService` is
  * how `layout.json` keys a position and how `views.json` writes a selector (`20-ir.md` 6.1, 6.2),
  * so one id form spans selection, layout and lenses. The alternative, Core's `symbolKey`, is
  * case-folded and NUL-separated: correct as a lookup key, unusable in a URL fragment or a JSON key,
  * and a second id form to keep in step with the first.
+ *
+ * **The trace format is Core's, not this file's.** `TraceEvent`, `readTrace` and `eventKey` come from
+ * `@sevenk/core`, which is where section 7 of `30-scenarios.md` is defined. This file held a
+ * hand-written copy until the specification was written, because the format existed only as a type in
+ * the sandbox — the one producer a consumer is told not to read (D93).
  */
 
 import {
+  eventKey,
   qualify,
+  readTrace,
   symbolKey,
   type Decl,
   type DeclKind,
   type LinkedModel,
   type PackageIr,
+  type TraceEvent,
 } from "@sevenk/core";
 
-/** Milliseconds on the virtual clock, as a trace records them. */
+export { readTrace, type TraceEvent } from "@sevenk/core";
+
+/** Epoch milliseconds on the clock, as a trace records them. */
 export type Instant = number;
 
 /** `service:acme.retail.sales.OrderService` — a selector, as the sidecars spell it. */
 export type SelectionId = string;
 
-/**
- * What Spider reads from a trace event.
- *
- * Deliberately narrow, and deliberately not the sandbox's type. The trace is a published
- * interchange artifact (`30-scenarios.md` section 7) that a converter from OpenTelemetry spans is
- * also meant to produce, so a consumer should depend on the fields it reads and nothing else. Every
- * field but `seq`, `at` and `kind` is optional because a converter cannot be expected to supply all
- * of them.
- *
- * Two qualification rules, learned from the sandbox's writer rather than from the specification,
- * which does not yet state them — see `docs/design.md`, "What the trace does not pin down":
- *
- * - `message`, `pipe`, `saga` and `schedule` are **qualified** (`acme.retail.sales.OrderPlaced`).
- * - `service` is a **bare name** (`OrderService`), and `subscription` is a name scoped to it.
- */
-export interface TraceEvent {
-  /** The event's identity. Stable under filtering, which an array index is not. */
-  readonly seq: number;
-  readonly at: Instant;
-  readonly kind: string;
-  readonly message?: string;
-  readonly pipe?: string;
-  readonly service?: string;
-  readonly subscription?: string;
-  readonly saga?: string;
-  /** The instance key, which is not the correlation id (`04-process.md` 1.1). */
-  readonly sagaKey?: string;
-  readonly schedule?: string;
-}
+/** An event's identity: `(run, seq)` as one string, from Core's `eventKey`. */
+export type EventKey = string;
+
+export { eventKey } from "@sevenk/core";
 
 /** A saga instance: not a declaration, so not addressable as one. */
 export interface InstanceRef {
@@ -94,8 +79,13 @@ export interface InstanceRef {
 export type Selection =
   /** A service, pipe, message, saga, schedule, package — anything the graph draws. */
   | { readonly k: "declaration"; readonly id: SelectionId }
-  /** One trace event. */
-  | { readonly k: "event"; readonly seq: number }
+  /**
+   * One trace event, by its identity: `(run, seq)`, never `seq` alone.
+   *
+   * `seq` restarts at 0 for each run, so a file holding two runs has two events numbered 0
+   * (`30-scenarios.md` 7.2). Keying on `seq` would silently merge them.
+   */
+  | { readonly k: "event"; readonly run: string; readonly seq: number }
   /** One saga instance, which spans many events and one stretch of time. */
   | { readonly k: "instance"; readonly saga: string; readonly key: string }
   /** A stretch of the virtual clock, inclusive at both ends. */
@@ -118,7 +108,8 @@ export interface Interval {
  */
 export interface Highlight {
   readonly declarations: ReadonlySet<SelectionId>;
-  readonly events: ReadonlySet<number>;
+  /** Event identities, as `eventKey` produces them. */
+  readonly events: ReadonlySet<EventKey>;
   /** The stretch of clock the selection covers. Absent when it covers no time at all. */
   readonly interval?: Interval;
 }
@@ -196,9 +187,9 @@ export interface Join {
   readonly model: LinkedModel;
   readonly trace: readonly TraceEvent[];
   /** The declarations an event touched. */
-  idsOf(seq: number): readonly SelectionId[];
+  idsOf(event: EventKey): readonly SelectionId[];
   /** The events a declaration took part in, in trace order. */
-  eventsOf(id: SelectionId): readonly number[];
+  eventsOf(id: SelectionId): readonly EventKey[];
   /** Every instance the trace mentions, in the order it first mentions them. */
   readonly instances: readonly InstanceRef[];
   /** The whole trace's span, absent for an empty trace. */
@@ -227,8 +218,8 @@ export function join(model: LinkedModel, trace: readonly TraceEvent[] = []): Joi
   }
 
   const ambiguous = new Set<string>();
-  const forward = new Map<number, SelectionId[]>();
-  const reverse = new Map<SelectionId, number[]>();
+  const forward = new Map<EventKey, SelectionId[]>();
+  const reverse = new Map<SelectionId, EventKey[]>();
   const instances: InstanceRef[] = [];
   const seenInstance = new Set<string>();
 
@@ -255,17 +246,24 @@ export function join(model: LinkedModel, trace: readonly TraceEvent[] = []): Joi
     }
 
     if (event.service !== undefined) {
-      const candidates = byService.get(event.service) ?? [];
-      // One match resolves. Several resolve to none: lighting up the wrong service is worse than
-      // lighting up neither, and silently picking the first would hide the collision for good.
-      if (candidates.length === 1) add(candidates[0]);
-      else if (candidates.length > 1) ambiguous.add(event.service);
+      const qualified = byQName.get(event.service);
+      if (qualified !== undefined) add(qualified);
+      else {
+        // A bare name means a producer that does not follow section 7.6 — a converter from another
+        // format, most likely. One match resolves it. Several resolve to none: lighting up the wrong
+        // service is worse than lighting up neither, and picking the first would hide the collision
+        // for good.
+        const candidates = byService.get(event.service) ?? [];
+        if (candidates.length === 1) add(candidates[0]);
+        else if (candidates.length > 1) ambiguous.add(event.service);
+      }
     }
 
-    forward.set(event.seq, ids);
+    const key = eventKey(event);
+    forward.set(key, ids);
     for (const id of ids) {
       const list = reverse.get(id) ?? [];
-      list.push(event.seq);
+      list.push(key);
       reverse.set(id, list);
     }
 
@@ -283,7 +281,7 @@ export function join(model: LinkedModel, trace: readonly TraceEvent[] = []): Joi
   return {
     model,
     trace,
-    idsOf: (seq) => forward.get(seq) ?? [],
+    idsOf: (event) => forward.get(event) ?? [],
     eventsOf: (id) => reverse.get(id) ?? [],
     instances,
     ...(times.length === 0
@@ -295,16 +293,17 @@ export function join(model: LinkedModel, trace: readonly TraceEvent[] = []): Joi
 
 // ---- resolution -------------------------------------------------------------
 
-const spanOf = (j: Join, seqs: readonly number[]): Interval | undefined => {
+const spanOf = (j: Join, keys: readonly EventKey[]): Interval | undefined => {
+  const wanted = new Set(keys);
   const times: Instant[] = [];
-  for (const event of j.trace) if (seqs.includes(event.seq)) times.push(event.at);
+  for (const event of j.trace) if (wanted.has(eventKey(event))) times.push(event.at);
   if (times.length === 0) return undefined;
   return { from: Math.min(...times), to: Math.max(...times) };
 };
 
 const highlight = (
   declarations: Iterable<SelectionId>,
-  events: readonly number[],
+  events: readonly EventKey[],
   interval: Interval | undefined,
 ): Highlight => ({
   declarations: new Set(declarations),
@@ -335,9 +334,10 @@ export function resolve(j: Join, selection: Selection): Highlight {
     }
 
     case "event": {
-      const event = j.trace.find((e) => e.seq === selection.seq);
+      const event = j.trace.find((e) => e.run === selection.run && e.seq === selection.seq);
       if (event === undefined) return EMPTY;
-      return highlight(j.idsOf(event.seq), [event.seq], { from: event.at, to: event.at });
+      const key = eventKey(event);
+      return highlight(j.idsOf(key), [key], { from: event.at, to: event.at });
     }
 
     case "instance": {
@@ -345,16 +345,16 @@ export function resolve(j: Join, selection: Selection): Highlight {
       // its saga and the pipes and services it drove, and those are what a reader wants lit.
       const events = j.trace
         .filter((e) => e.saga === selection.saga && e.sagaKey === selection.key)
-        .map((e) => e.seq);
-      const declarations = events.flatMap((seq) => [...j.idsOf(seq)]);
+        .map(eventKey);
+      const declarations = events.flatMap((key) => [...j.idsOf(key)]);
       return highlight(declarations, events, spanOf(j, events));
     }
 
     case "interval": {
       const { from, to } = selection;
-      const events = j.trace.filter((e) => e.at >= from && e.at <= to).map((e) => e.seq);
+      const events = j.trace.filter((e) => e.at >= from && e.at <= to).map(eventKey);
       return highlight(
-        events.flatMap((seq) => [...j.idsOf(seq)]),
+        events.flatMap((key) => [...j.idsOf(key)]),
         events,
         { from, to },
       );
@@ -368,35 +368,3 @@ export const emphasises = (h: Highlight, id: SelectionId): boolean => h.declarat
 /** Whether anything at all is selected, which is what tells a view to dim its background. */
 export const isActive = (h: Highlight): boolean =>
   h.declarations.size > 0 || h.events.size > 0 || h.interval !== undefined;
-
-// ---- reading a trace file ---------------------------------------------------
-
-/**
- * Reads NDJSON into events.
- *
- * Tolerant of a blank line and of a line that is not an event, because a trace arrives as a tail, a
- * paste or two runs concatenated — and refusing to open a bug report because its last line is
- * half-written would be the wrong trade. A line missing `seq`, `at` or `kind` is not an event by
- * this interface's own definition, so it is skipped rather than guessed at.
- */
-export function readTrace(ndjson: string): TraceEvent[] {
-  const out: TraceEvent[] = [];
-  for (const line of ndjson.split("\n")) {
-    const text = line.trim();
-    if (text === "" || !text.startsWith("{")) continue;
-    let parsed: Partial<TraceEvent>;
-    try {
-      parsed = JSON.parse(text) as Partial<TraceEvent>;
-    } catch {
-      continue;
-    }
-    if (typeof parsed.seq !== "number") continue;
-    if (typeof parsed.at !== "number") continue;
-    if (typeof parsed.kind !== "string") continue;
-    out.push(parsed as TraceEvent);
-  }
-  // Sorted by `(at, seq)`: the order the runtime applied them in, so a sequence diagram reads top
-  // to bottom even when the file was concatenated out of order. Many events share an instant,
-  // because a virtual clock does not advance while there is work due now, and `seq` breaks the tie.
-  return out.sort((a, b) => a.at - b.at || a.seq - b.seq);
-}

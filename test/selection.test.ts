@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import { buildWorkspace, hasErrors, type LinkedModel } from "@sevenk/core";
+import { eventKey, writeTrace, type TraceEvent } from "@sevenk/core";
 import {
   declById,
   deadLetterId,
@@ -19,7 +20,6 @@ import {
   readTrace,
   resolve,
   type Selection,
-  type TraceEvent,
 } from "../src/selection.js";
 
 // A small but complete model: two packages, two services, two pipes with a dead letter, a saga and
@@ -113,44 +113,47 @@ function model(): LinkedModel {
   return ws.model;
 }
 
-/** A trace of one order being fulfilled, in the shape the sandbox writes. */
+/** A trace of one order being fulfilled, in the shape a conforming runtime writes. */
+const RUN = "Fulfils#42";
+const ev = (e: Omit<TraceEvent, "run">): TraceEvent => ({ run: RUN, ...e });
+const K = (seq: number, run = RUN): string => eventKey({ run, seq });
+
 const TRACE: TraceEvent[] = [
-  { seq: 0, at: 0, kind: "published", message: "acme.sales.PlaceOrder", pipe: "acme.sales.commands" },
-  {
+  ev({ seq: 0, at: 0, kind: "published", message: "acme.sales.PlaceOrder", pipe: "acme.sales.commands" }),
+  ev({
     seq: 1, at: 0, kind: "delivered", message: "acme.sales.PlaceOrder",
-    pipe: "acme.sales.commands", service: "OrderService", subscription: "PlaceOrder",
-  },
-  {
+    pipe: "acme.sales.commands", service: "acme.sales.OrderService", subscription: "OrderService",
+  }),
+  ev({
     seq: 2, at: 0, kind: "saga-started", saga: "acme.sales.Fulfilment", sagaKey: "order-1",
     message: "acme.sales.PlaceOrder",
-  },
-  {
+  }),
+  ev({
     seq: 3, at: 10, kind: "published", message: "acme.warehouse.PickRequested",
-    pipe: "acme.warehouse.commands", service: "OrderService",
-  },
-  {
+    pipe: "acme.warehouse.commands", service: "acme.sales.OrderService",
+  }),
+  ev({
     seq: 4, at: 20, kind: "delivered", message: "acme.warehouse.PickRequested",
-    pipe: "acme.warehouse.commands", service: "PickingService", subscription: "PickRequested",
-  },
-  { seq: 5, at: 30, kind: "published", message: "acme.warehouse.Picked", pipe: "acme.warehouse.events" },
-  {
+    pipe: "acme.warehouse.commands", service: "acme.warehouse.PickingService",
+    subscription: "PickingService",
+  }),
+  ev({ seq: 5, at: 30, kind: "published", message: "acme.warehouse.Picked", pipe: "acme.warehouse.events" }),
+  ev({
     seq: 6, at: 40, kind: "saga-advanced", saga: "acme.sales.Fulfilment", sagaKey: "order-1",
     message: "acme.warehouse.Picked",
-  },
-  {
-    seq: 7, at: 40, kind: "saga-completed", saga: "acme.sales.Fulfilment", sagaKey: "order-1",
-  },
+  }),
+  ev({ seq: 7, at: 40, kind: "saga-completed", saga: "acme.sales.Fulfilment", sagaKey: "order-1" }),
   // A second instance, so an instance selection has something to exclude.
-  {
+  ev({
     seq: 8, at: 50, kind: "saga-started", saga: "acme.sales.Fulfilment", sagaKey: "order-2",
     message: "acme.sales.PlaceOrder",
-  },
+  }),
   // A dead letter, which is a node but not a declaration.
-  {
+  ev({
     seq: 9, at: 60, kind: "dead-lettered", message: "acme.warehouse.PickRequested",
     pipe: "acme.warehouse.commands.dead",
-  },
-  { seq: 10, at: 70, kind: "schedule-fired", schedule: "acme.sales.Sweep", message: "acme.sales.PlaceOrder" },
+  }),
+  ev({ seq: 10, at: 70, kind: "schedule-fired", schedule: "acme.sales.Sweep", message: "acme.sales.PlaceOrder" }),
 ];
 
 describe("identity", () => {
@@ -192,9 +195,9 @@ describe("identity", () => {
 });
 
 describe("the trace is the join", () => {
-  it("resolves qualified names and the one bare one", () => {
+  it("resolves the qualified names the format requires", () => {
     const j = join(model(), TRACE);
-    expect(j.idsOf(1)).toEqual(
+    expect(j.idsOf(K(1))).toEqual(
       expect.arrayContaining([
         "message:acme.sales.PlaceOrder",
         "pipe:acme.sales.commands",
@@ -206,7 +209,7 @@ describe("the trace is the join", () => {
 
   it("lights a dead letter and the pipe it belongs to", () => {
     const j = join(model(), TRACE);
-    expect(j.idsOf(9)).toEqual(
+    expect(j.idsOf(K(9))).toEqual(
       expect.arrayContaining([
         "pipe:acme.warehouse.commands.dead",
         "pipe:acme.warehouse.commands",
@@ -216,8 +219,8 @@ describe("the trace is the join", () => {
 
   it("resolves a schedule and a saga", () => {
     const j = join(model(), TRACE);
-    expect(j.idsOf(10)).toContain("schedule:acme.sales.Sweep");
-    expect(j.idsOf(2)).toContain("saga:acme.sales.Fulfilment");
+    expect(j.idsOf(K(10))).toContain("schedule:acme.sales.Sweep");
+    expect(j.idsOf(K(2))).toContain("saga:acme.sales.Fulfilment");
   });
 
   it("lists every instance once, in first-mention order", () => {
@@ -228,9 +231,11 @@ describe("the trace is the join", () => {
     ]);
   });
 
-  it("refuses to guess when a bare service name is ambiguous", () => {
-    // The trace writes a service unqualified, so two packages declaring `PickingService` leaves a
-    // consumer no way to tell them apart. Highlighting the wrong one is worse than neither.
+  it("refuses to guess when a producer writes a bare service name", () => {
+    // Section 7.6 requires a qualified service, so this is a non-conforming producer — a converter
+    // from another format, most likely. A bare name is resolved only when exactly one declaration
+    // matches: with two packages declaring `PickingService`, highlighting the wrong one is worse
+    // than highlighting neither, and picking the first would hide the collision for good.
     const ws = buildWorkspace([
       { path: "a.7k", source: WAREHOUSE },
       {
@@ -238,11 +243,17 @@ describe("the trace is the join", () => {
         source: WAREHOUSE.replace("package acme.warehouse", "package acme.other"),
       },
     ]);
-    const j = join(ws.model, [
-      { seq: 0, at: 0, kind: "delivered", service: "PickingService" },
-    ]);
-    expect(j.idsOf(0)).toEqual([]);
+    const j = join(ws.model, [ev({ seq: 0, at: 0, kind: "delivered", service: "PickingService" })]);
+    expect(j.idsOf(K(0))).toEqual([]);
     expect(j.ambiguous).toEqual(["PickingService"]);
+  });
+
+  it("resolves a bare service name when only one declaration matches", () => {
+    const j = join(model(), [
+      ev({ seq: 0, at: 0, kind: "delivered", service: "PickingService" }),
+    ]);
+    expect(j.idsOf(K(0))).toEqual(["service:acme.warehouse.PickingService"]);
+    expect(j.ambiguous).toEqual([]);
   });
 
   it("reports the trace's extent, and nothing for an empty trace", () => {
@@ -257,7 +268,7 @@ describe("selecting one thing highlights a set", () => {
       k: "declaration",
       id: "service:acme.sales.OrderService",
     });
-    expect([...h.events]).toEqual([1, 3]);
+    expect([...h.events]).toEqual([K(1), K(3)]);
     expect(h.interval).toEqual({ from: 0, to: 10 });
     // A declaration selection emphasises itself, not its neighbours: the graph would be a wash of
     // highlight if clicking a service lit every pipe it touches.
@@ -265,8 +276,8 @@ describe("selecting one thing highlights a set", () => {
   });
 
   it("gives an event the declarations it touched and one instant", () => {
-    const h = resolve(join(model(), TRACE), { k: "event", seq: 4 });
-    expect([...h.events]).toEqual([4]);
+    const h = resolve(join(model(), TRACE), { k: "event", run: RUN, seq: 4 });
+    expect([...h.events]).toEqual([K(4)]);
     expect(h.interval).toEqual({ from: 20, to: 20 });
     expect(h.declarations).toContain("service:acme.warehouse.PickingService");
     expect(h.declarations).toContain("message:acme.warehouse.PickRequested");
@@ -278,15 +289,15 @@ describe("selecting one thing highlights a set", () => {
       saga: "acme.sales.Fulfilment",
       key: "order-1",
     });
-    expect([...h.events]).toEqual([2, 6, 7]);
-    expect(h.events).not.toContain(8);
+    expect([...h.events]).toEqual([K(2), K(6), K(7)]);
+    expect(h.events).not.toContain(K(8));
     expect(h.interval).toEqual({ from: 0, to: 40 });
     expect(h.declarations).toContain("saga:acme.sales.Fulfilment");
   });
 
   it("gives an interval everything inside it, at both ends inclusive", () => {
     const h = resolve(join(model(), TRACE), { k: "interval", from: 20, to: 40 });
-    expect([...h.events]).toEqual([4, 5, 6, 7]);
+    expect([...h.events]).toEqual([K(4), K(5), K(6), K(7)]);
     expect(h.interval).toEqual({ from: 20, to: 40 });
   });
 
@@ -321,7 +332,7 @@ describe("a selection outlives the model it was made against", () => {
   });
 
   it("drops an event that is no longer in the trace", () => {
-    const h = resolve(join(model(), []), { k: "event", seq: 4 });
+    const h = resolve(join(model(), []), { k: "event", run: RUN, seq: 4 });
     expect(isActive(h)).toBe(false);
   });
 });
@@ -340,38 +351,16 @@ describe("the graph is useful before anything has run", () => {
 });
 
 describe("reading a trace file", () => {
-  it("skips a blank line, a comment and a half-written last line", () => {
-    const ndjson = [
-      '{"seq":1,"at":5,"kind":"published"}',
-      "",
-      "   ",
-      "not json at all",
-      '{"seq":0,"at":0,"kind":"published"}',
-      '{"seq":2,"at":9,"kind":"publ',
-    ].join("\n");
-    expect(readTrace(ndjson).map((e) => e.seq)).toEqual([0, 1]);
-  });
-
-  it("skips a line that is not an event by this interface's definition", () => {
-    expect(readTrace('{"hello":"world"}')).toEqual([]);
-    expect(readTrace('{"seq":1,"at":0}')).toEqual([]);
-    expect(readTrace('{"seq":"1","at":0,"kind":"published"}')).toEqual([]);
-  });
-
-  it("orders by instant, then by sequence", () => {
-    // A virtual clock does not advance while work is due, so many events share an instant and the
-    // sequence number is the only thing that orders them.
-    const ndjson = [
-      '{"seq":3,"at":10,"kind":"handled"}',
-      '{"seq":1,"at":0,"kind":"delivered"}',
-      '{"seq":2,"at":0,"kind":"handled"}',
-      '{"seq":0,"at":0,"kind":"published"}',
-    ].join("\n");
-    expect(readTrace(ndjson).map((e) => e.seq)).toEqual([0, 1, 2, 3]);
-  });
-
-  it("reads back what the sandbox writes", () => {
-    const ndjson = TRACE.map((e) => JSON.stringify(e)).join("\n") + "\n";
-    expect(readTrace(ndjson)).toEqual(TRACE);
+  it("uses Core's reader, so the format has one definition", () => {
+    // Core owns the format (`30-scenarios.md` 7.8) and tests the reader; what matters here is that
+    // Spider reads a real trace back into the events it joins against.
+    const { events, problems } = readTrace(
+      writeTrace(TRACE),
+    );
+    expect(problems).toEqual([]);
+    expect(events).toEqual(TRACE);
+    expect(resolve(join(model(), events), { k: "event", run: RUN, seq: 4 }).declarations).toContain(
+      "service:acme.warehouse.PickingService",
+    );
   });
 });

@@ -18,45 +18,41 @@ because Core runs in a browser: there is no `node:` import anywhere in `packages
 otherwise need does not have to exist, and Spider's view of a model cannot drift from the checker's,
 because it *is* the checker's.
 
-**The trace**, as NDJSON. Never the sandbox: `30-scenarios.md` section 7 makes the trace an
-interchange artifact precisely so that a trace file is a shareable bug report and a converter from
-OpenTelemetry spans can point these views at production. Spider therefore depends on a structural
-interface over trace events (`TraceEvent` in [`src/selection.ts`](../src/selection.ts)) listing the
-fields it reads and nothing more — not on any producer's type.
+**The trace**, as NDJSON, through Core's `readTrace`. Never the sandbox: `30-scenarios.md` section 7
+makes the trace an interchange artifact precisely so that a trace file is a shareable bug report and a
+converter from OpenTelemetry spans can point these views at production. The format is defined in Core,
+so a producer and a consumer import one definition rather than agreeing twice.
 
 A trace is **optional**. The graph is worth drawing before anything has run, and the first increment
 has no trace at all.
 
-### What the trace does not pin down
+### What the trace pins down
 
-Writing the first consumer of the trace format turned up a gap, and it belongs here because the gap
-is the reason this file has a hand-written `TraceEvent` rather than an imported one.
+Writing the first consumer of the trace format turned up a gap, and closing it changed this design, so
+it belongs here.
 
-`30-scenarios.md` section 7 declares the trace "the third of 7K's published interchange artifacts"
-and then specifies none of it: no field list, no event kinds, no rule for how names are written. The
-format exists as a TypeScript interface in the sandbox repository — which is the one place section 7
-says a tool must not read.
+`30-scenarios.md` section 7 declared the trace "the third of 7K's published interchange artifacts" and
+then specified none of it: no field list, no event kinds, no rule for how names are written. The format
+existed as a TypeScript interface in the sandbox — the one place section 7 says a tool must not read —
+so this file held a hand-written copy of it, inferred from that producer's source.
 
-So the rules below were learned from the sandbox's writer, not from the specification:
+Section 7 is now written, and the contract lives in `@sevenk/core` (D93). Spider imports `TraceEvent`,
+`readTrace` and `eventKey` rather than restating them, so there is no copy left to drift. Four things
+that inference had got wrong or could not have known:
 
-| Field | How it is written |
-| --- | --- |
-| `message` | qualified — `acme.sales.PlaceOrder`, the envelope's wire type |
-| `pipe` | qualified; a dead letter as `<pipe>.dead` |
-| `saga`, `schedule` | qualified |
-| `service` | **a bare name** — `OrderService` |
-| `subscription` | a name scoped to its service |
+- **An event's identity is `(run, seq)`, not `seq`.** `seq` restarts at 0 for each run, so a file of
+  two runs has two events numbered 0 — which the sandbox's own `--ndjson` across several scenarios
+  produced. Spider's first selection model keyed events on `seq` alone and would have merged them.
+- **`service` is qualified**, like every other name. It used to be bare, which left two packages each
+  declaring a `PickingService` indistinguishable.
+- **`published` may carry no `service` at all**, because a message the scenario published itself has no
+  originating service. Filling the field with something that is not a declaration would be worse.
+- **Field order is fixed**, so two runs of one scenario produce byte-identical files and a trace diffs.
 
-That one inconsistency has a consequence Spider has to handle rather than wish away: two packages
-may each declare a service called `PickingService`, and a bare name cannot tell them apart. Spider
-resolves a bare service name only when exactly one declaration matches, and otherwise resolves it to
-nothing and records the collision in `Join.ambiguous` — because highlighting the wrong service is
-worse than highlighting neither, and quietly picking the first match would bury the problem
-permanently.
-
-**This should be fixed in 7K, not worked around here**: section 7 should specify the fields and the
-event kinds, and qualify `service` like everything else. Until it does, every claim in the table
-above is a guess that happens to be right today.
+Spider still tolerates a bare service name, because section 7.7 makes a converter from another
+observability format a legitimate lesser producer. It resolves one only when exactly one declaration
+matches, and records the collision in `Join.ambiguous` otherwise — highlighting the wrong service is
+worse than highlighting neither, and picking the first match would bury the problem for good.
 
 ## 2. The selection model
 
@@ -78,14 +74,14 @@ A **selection** is singular. A **highlight** is a set.
 ```ts
 type Selection =
   | { k: "declaration"; id: SelectionId }      // anything the graph draws
-  | { k: "event"; seq: number }                // one trace event
+  | { k: "event"; run: string; seq: number }   // one trace event
   | { k: "instance"; saga: string; key: string } // one saga instance
   | { k: "interval"; from: Instant; to: Instant } // a stretch of clock
   | { k: "none" }
 
 interface Highlight {
   declarations: ReadonlySet<SelectionId>
-  events: ReadonlySet<number>
+  events: ReadonlySet<EventKey>
   interval?: Interval
 }
 ```
@@ -121,8 +117,8 @@ its events.
 ### 2.3 A selection is an identity, never a reference
 
 Spider re-parses on every keystroke, so a selection must survive the model object it pointed into
-being discarded. Every selection is therefore a string id, a sequence number or an instance key —
-never a `Decl`.
+being discarded. Every selection is therefore a string id, an event key or an instance key — never a
+`Decl`.
 
 Three consequences, all asserted in [`test/selection.test.ts`](../test/selection.test.ts):
 
@@ -130,8 +126,9 @@ Three consequences, all asserted in [`test/selection.test.ts`](../test/selection
 - A selection **survives the thing it names being deleted**. It resolves to an empty highlight, and
   the id stays emphasised — because a view that dropped the selection on a transient parse failure
   would lose it on every keystroke.
-- An **event identity is the trace's `seq`**, never an index into a filtered array. Filtering the
-  sequence view is a feature; an index that shifts when a filter changes is a bug waiting for it.
+- An **event identity is `(run, seq)`**, never an index into a filtered array. Filtering the sequence
+  view is a feature; an index that shifts when a filter changes is a bug waiting for it. And never
+  `seq` alone, which is not unique in a file holding more than one run.
 
 ### 2.4 The id form is the one the sidecars already use
 

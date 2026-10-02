@@ -15,7 +15,7 @@ the views exist yet.
 
 ```
 npm install
-npm test        # 23 tests
+npm test        # 21 tests
 npm run build
 ```
 
@@ -31,10 +31,15 @@ not a copy and not a serialised form of their output. Core runs in a browser (no
 sources in as strings), so Spider's view of a model cannot drift from the checker's, because it *is*
 the checker's.
 
-**A trace**, as NDJSON, and never from the sandbox directly. The trace is one of 7K's published
-interchange artifacts, which is what makes a trace file a shareable bug report and lets a converter
-from OpenTelemetry spans point these views at production. Spider depends on the fields it reads and
-nothing more.
+**A trace**, as NDJSON, through Core's reader — never from the sandbox directly. The trace is one of
+7K's published interchange artifacts, which is what makes a trace file a shareable bug report and lets
+a converter from OpenTelemetry spans point these views at production.
+
+Being its second consumer is how that format came to be specified at all. Section 7 named the artifact
+and described none of it, so this package began with a hand-written copy of the shape inferred from the
+sandbox's source — and the copy keyed events on `seq`, which is not unique across a file holding more
+than one run. Section 7 is now written and the contract lives in Core, so there is no copy left to
+drift.
 
 A trace is optional. The graph is worth drawing before anything has run.
 
