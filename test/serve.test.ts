@@ -158,7 +158,9 @@ describe("serving", () => {
     // earlier. `main.ts` looks each of these up and throws if it is missing.
     const page = await (await get("/")).text();
     const main = await readFile(new URL("../src/web/main.ts", import.meta.url), "utf-8");
-    const wanted = [...main.matchAll(/el(?:<[^>]*>)?\("([a-z]+)"\)/g)].map((m) => m[1]!);
+    // `[a-zA-Z]`, not `[a-z]`: a camelCase id would otherwise be skipped silently, which is precisely
+    // the typo this test exists to catch.
+    const wanted = [...main.matchAll(/el(?:<[^>]*>)?\("([a-zA-Z]+)"\)/g)].map((m) => m[1]!);
     expect(wanted.length).toBeGreaterThan(3);
     for (const id of new Set(wanted)) expect(page, id).toContain(`id="${id}"`);
   });

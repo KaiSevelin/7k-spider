@@ -32,6 +32,13 @@ function register(): void {
 export interface RenderOptions {
   /** Called with the id of whatever was clicked, or nothing when the background was. */
   readonly onSelect?: (id: SelectionId | undefined) => void;
+  /**
+   * Called on a double tap: the drill-in gesture, which is what people already try on a graph.
+   *
+   * Separate from `onSelect` rather than inferred from two clicks, so a host that wants selection
+   * without focus — a webview panel, say — simply does not pass it.
+   */
+  readonly onFocus?: (id: SelectionId) => void;
 }
 
 export interface Rendered {
@@ -257,6 +264,11 @@ export function renderGraph(
     cy.on("tap", (e) => {
       if (e.target === cy) onSelect(undefined);
     });
+  }
+
+  if (options.onFocus !== undefined) {
+    const onFocus = options.onFocus;
+    cy.on("dbltap", "node", (e) => onFocus(e.target.id() as SelectionId));
   }
 
   const highlight = (h: Highlight | undefined): void => {

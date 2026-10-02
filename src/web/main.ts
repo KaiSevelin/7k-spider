@@ -19,6 +19,13 @@
 
 import { buildWorkspace, hasErrors, type Diagnostic, type LinkedModel } from "@sevenk/core";
 import { buildGraph, type Graph, type GraphOptions } from "../graph.js";
+import {
+  applyFocus,
+  DEFAULT_RADIUS,
+  isFocused,
+  NOT_FOCUSED,
+  type Focus,
+} from "../focus.js";
 import { EVERYTHING, isPort, parseViews, resolveLens, type Lens, type Views } from "../lens.js";
 import { nodeFor, renderGraph, type Rendered } from "../render.js";
 import { join, resolve, type Selection, type SelectionId } from "../selection.js";
@@ -37,6 +44,9 @@ const status = el("status");
 const sidebar = el("sidebar");
 const problems = el<HTMLPreElement>("problems");
 const lensPicker = el<HTMLSelectElement>("lens");
+const focusChip = el("focus");
+const focusName = el("focusName");
+const focusHops = el("focusHops");
 
 let model: LinkedModel | undefined;
 /** The whole graph, before any lens. Kept so a lens change needs no re-parse. */
@@ -47,6 +57,8 @@ let view: Rendered | undefined;
 let selection: Selection = { k: "none" };
 let views: Views = {};
 let lensProblems: readonly string[] = [];
+/** Transient, and never written anywhere: that is what makes it safe to be aggressive. */
+let focus: Focus = NOT_FOCUSED;
 
 const EVERYTHING_LABEL = "everything";
 
@@ -187,6 +199,32 @@ function select(id: SelectionId | undefined): void {
   describe(id);
 }
 
+/** Focuses on one node. A port stands for what is already out of view, so it is not a thing to focus. */
+function focusOnId(id: SelectionId): void {
+  if (isPort(id)) return;
+  focus = { seeds: [id], radius: focus.radius };
+  select(id);
+  redraw();
+}
+
+/** Toggles the focus on whatever is selected. */
+function toggleFocus(): void {
+  if (isFocused(focus)) {
+    focus = { seeds: [], radius: focus.radius };
+    redraw();
+    return;
+  }
+  if (selection.k === "declaration") focusOnId(selection.id);
+}
+
+function setRadius(by: number): void {
+  if (!isFocused(focus)) return;
+  // One hop is useful from a pipe and useless from a service, so one is the floor rather than zero:
+  // a focus showing a single node with ports on every side answers nothing.
+  focus = { ...focus, radius: Math.min(8, Math.max(1, focus.radius + by)) };
+  redraw();
+}
+
 /** Diagnostics are shown, never swallowed: a warning is usually the interesting part of a model. */
 function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[]): void {
   const lines = [
@@ -202,7 +240,18 @@ function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[
 /** Re-applies the lens to the graph already built. No re-parse: a lens changes only what is drawn. */
 function redraw(): void {
   if (whole === undefined) return;
-  graph = resolveLens(whole, currentLens());
+  // Lens first, focus second: a focus narrows what the lens left, never the other way round.
+  const lensed = resolveLens(whole, currentLens());
+  graph = applyFocus(lensed, focus);
+
+  focusChip.hidden = !isFocused(focus);
+  if (isFocused(focus)) {
+    const seed = focus.seeds[0] ?? "";
+    focusName.textContent =
+      (nodeFor(lensed, seed)?.qname ?? seed.slice(seed.indexOf(":") + 1)) +
+      (focus.seeds.length > 1 ? ` +${focus.seeds.length - 1}` : "");
+    focusHops.textContent = String(focus.radius);
+  }
 
   const counts = [
     `${graph.nodes.filter((n) => n.kind === "service" || n.kind === "external").length} services`,
@@ -213,8 +262,9 @@ function redraw(): void {
   if (hidden > 0) counts.push(`${hidden} hidden`);
   status.textContent = counts.join(" · ");
 
-  if (view === undefined) view = renderGraph(el("graph"), graph, { onSelect: select });
-  else view.update(graph);
+  if (view === undefined) {
+    view = renderGraph(el("graph"), graph, { onSelect: select, onFocus: focusOnId });
+  } else view.update(graph);
 
   // A selection is an identity, so it survives this rebuild (`docs/design.md` 2.3) — which is the whole
   // reason it is an id and not a reference into a model that was just thrown away.
@@ -225,6 +275,8 @@ function draw(sources: Sources): void {
   const ws = buildWorkspace(sources.files.map((f) => ({ path: f.path, source: f.source })));
   model = ws.model;
   whole = buildGraph(ws.model, optionsFromForm());
+  // The focus is an id too, so it survives this rebuild — and `applyFocus` shows everything rather
+  // than nothing if the thing it names has gone.
   status.classList.toggle("bad", hasErrors(ws.diagnostics));
   redraw();
   report(ws.diagnostics, graph?.unresolved ?? []);
@@ -267,15 +319,28 @@ async function load(): Promise<void> {
 }
 
 lensPicker.addEventListener("change", redraw);
+el("focusClear").addEventListener("click", toggleFocus);
+el("focusIn").addEventListener("click", () => setRadius(1));
+el("focusOut").addEventListener("click", () => setRadius(-1));
 for (const id of ["packages", "dead"]) {
   el<HTMLInputElement>(id).addEventListener("change", () => {
     void load();
   });
 }
 
-// Escape clears, because a selection that can only be replaced is a selection you are stuck in.
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") select(undefined);
+  if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
+
+  // Escape undoes the most recent narrowing first: the focus, then the selection. A single key that
+  // cleared both would make it impossible to keep a focus while looking at something inside it.
+  if (e.key === "Escape") {
+    if (isFocused(focus)) toggleFocus();
+    else select(undefined);
+    return;
+  }
+  if (e.key === "f" || e.key === "F") toggleFocus();
+  if (e.key === "+" || e.key === "=") setRadius(1);
+  if (e.key === "-" || e.key === "_") setRadius(-1);
 });
 
 void load();

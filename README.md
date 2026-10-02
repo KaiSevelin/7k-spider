@@ -20,7 +20,7 @@ It watches the files, so editing a `.7k` redraws the page — and because the la
 the parts you did not change stay where they were.
 
 ```
-npm test        # 65 tests
+npm test        # 111 tests
 npm run build
 ```
 
@@ -71,6 +71,20 @@ while you typed would be useless at the moment you need it.
 **Only declared packages get a box.** `acme.retail.sales` implies `acme` and `acme.retail`; neither is
 drawn, because an implied package is a naming prefix rather than an ownership boundary, and a box would
 claim an owner nobody wrote.
+
+## Three ways to narrow what you are looking at
+
+A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived
+from what is selected. A **selection** hides nothing — it emphasises one thing and dims the rest. They
+compose in that order, and keeping them apart is what stops a filter becoming something you cannot
+switch off.
+
+Both hiding verbs put a **port** where they cut an edge, rather than dropping it. A pipe drawn with
+traffic arriving from nowhere is not a partial picture, it is a wrong one, and a reader has no way to
+tell.
+
+Focus reaches **two hops** by default, because the graph is bipartite on purpose: a service's neighbours
+at one hop are pipes, and "what does this talk to" is a question the decoupling makes you ask twice.
 
 ## The idea the whole thing rests on
 

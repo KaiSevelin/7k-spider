@@ -74,6 +74,32 @@
 
       label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-dim); }
 
+      /* A focus hides things, so it has to be visible that one is on. */
+      #focus {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 1px 4px 1px 7px;
+        border: 1px solid var(--accent);
+        border-radius: 10px;
+        color: var(--accent);
+      }
+      #focus[hidden] { display: none; }
+      #focus b { font-weight: 600; }
+      #focusHops { min-width: 1.2em; text-align: center; color: var(--ink-dim); }
+
+      #focus button {
+        font: inherit;
+        line-height: 1;
+        color: var(--accent);
+        background: none;
+        border: 0;
+        padding: 1px 3px;
+        cursor: pointer;
+        border-radius: 3px;
+      }
+      #focus button:hover { background: var(--package); }
+
       select {
         font: inherit;
         color: var(--ink);
@@ -157,6 +183,13 @@
     <header>
       <h1>7K Spider</h1>
       <span id="status">loading…</span>
+      <span id="focus" hidden>
+        focus <b id="focusName"></b>
+        <button type="button" id="focusOut" title="fewer hops">&minus;</button><span
+          id="focusHops"
+        ></span><button type="button" id="focusIn" title="more hops">+</button>
+        <button type="button" id="focusClear" title="clear the focus (Esc)">&times;</button>
+      </span>
       <label for="lens">lens</label>
       <select id="lens"></select>
       <label><input type="checkbox" id="packages" checked /> packages</label>

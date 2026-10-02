@@ -243,7 +243,96 @@ the whole view. Writing it is mutation, which is increment 5.
 the stylesheet's validity, the server and the page-to-script contract are all tested. How it *looks* is
 checked by running it.
 
-## 4. Increments
+## 4. Narrowing: three verbs, kept apart
+
+Three different things reduce what you are looking at, and conflating any two of them is how a filter
+becomes something you cannot switch off.
+
+| | what it does | how long it lasts | where it comes from |
+|---|---|---|---|
+| **select** | emphasises one thing, dims the rest | until you select something else | a click |
+| **focus** | hides everything outside a neighbourhood | until you clear it | derived from the selection |
+| **lens** | hides everything outside a saved filter | until you pick another | `views.json`, on disk |
+
+Spider started with only the first. The three header checkboxes were an ad-hoc fourth, parallel to a
+mechanism 7K already specifies — exactly the kind of second source of truth this project keeps deleting.
+
+They compose in one order, and only one: **lens, then focus, then selection.** A focus narrows what the
+lens left. A selection emphasises within what survived both.
+
+### 4.1 A narrowed graph must not lie
+
+Both hiding verbs face the same problem: an edge with one end inside and one end outside.
+
+Dropping it is not an option. A pipe whose producer has been hidden would be drawn with traffic arriving
+from nowhere; a service whose pipe has been hidden would be drawn emitting into nothing. Those pictures
+are not *partial*, they are **wrong**, and a reader has no way to tell.
+
+So an escaping edge ends in a **port**: a stub saying "something out there connects here". That is what
+`20-ir.md` 6.1 means by a boundary port — "an edge leaving the view renders as a boundary port, the same
+aggregation used for a collapsed package" — and it is why `restrict` is its own module rather than code
+in both places. Two implementations of "what does a narrowed graph look like" would eventually disagree,
+and a disagreement between the lens and the focus is one nobody would think to look for.
+
+A port is **counted, not named** — "2 outside". A single name would read as a node that is in the view
+after all. The names are in the sidebar, where there is room to be exact.
+
+This also forced a rename. `kind: "port"` used to mean an `@external` service, which is a different idea
+entirely: one marks where the system ends, the other marks where the *picture* ends. The service is
+`external` now.
+
+### 4.2 Lenses
+
+`views.json`, resolved in four steps, in the order 6.1 states: union the includes, close over the edges,
+subtract the excludes, stand up the ports.
+
+Two judgement calls the specification leaves open:
+
+**Closure is one step.** "Including a service brings in the pipes it emits to and reacts from; including
+a pipe brings in both ends." Iterating that would walk the whole connected component and the lens would
+select everything, which is plainly not what a saved filter is for.
+
+**A `package:` selector reaches descendants.** `acme.retail` owns no declarations of its own in the
+examples — it is implied by its children — so a lens that stopped at direct members would select
+*nothing at all*. That is a trap rather than a rule. A reader naming a parent means that whole area.
+
+A `label:` selector matches **propagated labels and annotations both**, which is what makes `PiiFlow`
+reach the pipe carrying the message carrying the record carrying the `@pii` field, and what makes the
+specification's own `label:external` perimeter lens mean anything (7K's D95).
+
+### 4.3 Focus
+
+A double tap, or `f` on the selection. Radius in **edges**, default **two**, adjustable with `+` and `-`.
+
+**Two, because the graph is bipartite on purpose.** A service's neighbours at one hop are *pipes*, which
+answers nothing — "show me OrderService and what it touches" means the services it talks to, and those
+are two hops away through the pipe that decouples them. One hop from a *pipe* does reach both ends, so an
+odd radius is useful there and useless from a service. Two answers the question from either end.
+
+It is adjustable because three hops is "and what *they* talk to", which is the next question, and nothing
+in the model says when to stop. On the examples, radius two draws 11 of 24 nodes on average.
+
+Three properties, all tested:
+
+- **A stale focus shows everything, not nothing.** Spider re-parses on every keystroke, so a focus
+  outliving its subject is normal rather than exceptional. An empty screen is the worst possible answer
+  to "where did my model go".
+- **It never widens.** Only ports are added; every other node was already there.
+- **It is transient by construction.** Nothing writes it anywhere, which is what makes it safe to be
+  aggressive. A hidden thing you cannot get back is a different and much worse feature.
+
+`Escape` undoes the most recent narrowing first — the focus, then the selection. A single key that
+cleared both would make it impossible to keep a focus while looking at something inside it.
+
+### 4.4 What is still missing
+
+**Search.** `ctrl-K` over declarations, which is the one navigation primitive whose usefulness does not
+depend on how big the model is.
+
+**Collapsing a package.** `layout.json` has a `collapsed` list and the aggregation is the same `restrict`
+plus ports, so the hard part is already built.
+
+## 5. Increments
 
 Each one is useful on its own, and none is a prerequisite rewrite of the one before.
 
@@ -257,7 +346,7 @@ Read-only first, and mutation last, because the authoring experience already exi
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
 
-## 5. Rendering
+## 6. Rendering
 
 **Cytoscape.js**, with layout from **ELK** through `cytoscape-elk` (D92).
 
@@ -276,7 +365,7 @@ rather than composing nodes from components:
   generated image rather than markup. Free for the first increment, which is boxes and labels, and
   not free later.
 
-## 6. Host
+## 7. Host
 
 A **local web app**, served by a command. The renderer goes in a package that knows nothing about its
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a

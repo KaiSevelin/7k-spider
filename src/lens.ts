@@ -15,13 +15,12 @@
  */
 
 import { isAncestorPackage } from "@sevenk/core";
-import {
-  marksOfNode,
-  type Graph,
-  type GraphEdge,
-  type GraphNode,
-} from "./graph.js";
+import { marksOfNode, type Graph, type GraphNode } from "./graph.js";
+import { restrict } from "./restrict.js";
 import type { SelectionId } from "./selection.js";
+
+// Re-exported so a caller narrowing the graph does not have to know which module shapes the result.
+export { isPort, portId } from "./restrict.js";
 
 export interface Lens {
   /** Selectors to union. Empty means everything, which is the lens you get before choosing one. */
@@ -165,14 +164,6 @@ export function parseViews(text: string): ViewsResult {
 
 // ---- resolution ------------------------------------------------------------
 
-const PORT_PREFIX = "port:";
-
-/** `port:pipe:acme.shop.events:in` — a stub, and deliberately not a declaration id. */
-export const portId = (inside: SelectionId, direction: "in" | "out"): SelectionId =>
-  `${PORT_PREFIX}${inside}:${direction}`;
-
-export const isPort = (id: SelectionId): boolean => id.startsWith(PORT_PREFIX);
-
 /**
  * Applies a lens to a graph.
  *
@@ -217,101 +208,8 @@ export function resolveLens(graph: Graph, lens: Lens): Graph {
     if (hit(exclude, node)) inside.delete(node.id);
   }
 
-  // 4. A port where an edge still leaves.
-  const nodes: GraphNode[] = [];
-  const edges: GraphEdge[] = [];
-  const ports = new Map<SelectionId, { node: GraphNode; messages: Set<string>; hidden: Set<string> }>();
-
-  for (const edge of graph.edges) {
-    const fromIn = inside.has(edge.from);
-    const toIn = inside.has(edge.to);
-    if (fromIn && toIn) {
-      edges.push(edge);
-      continue;
-    }
-    if (!fromIn && !toIn) continue;
-
-    const insideId = fromIn ? edge.from : edge.to;
-    const outsideId = fromIn ? edge.to : edge.from;
-    const direction = fromIn ? "out" : "in";
-    const anchor = byId.get(insideId);
-    if (anchor === undefined) continue;
-
-    const id = portId(insideId, direction);
-    let port = ports.get(id);
-    if (port === undefined) {
-      port = {
-        node: {
-          id,
-          kind: "port",
-          label: "",
-          qname: id,
-          ...(anchor.parent === undefined ? {} : { parent: anchor.parent }),
-          labels: [],
-          annotations: [],
-        },
-        messages: new Set(),
-        hidden: new Set(),
-      };
-      ports.set(id, port);
-    }
-    for (const m of edge.messages) port.messages.add(m);
-    port.hidden.add(byId.get(outsideId)?.qname ?? outsideId);
-
-    edges.push({
-      id: `${direction === "out" ? insideId : id} -> ${direction === "out" ? id : insideId}`,
-      from: direction === "out" ? insideId : id,
-      to: direction === "out" ? id : insideId,
-      messages: [...port.messages],
-      messageIds: edge.messageIds,
-      direction: edge.direction,
-      ...(edge.incomplete === true ? { incomplete: true } : {}),
-    });
-  }
-
-  // One edge per port, carrying the union: several escaping edges in one direction are one fact about
-  // the view — "something out there connects here" — and one curve per hidden counterparty would be
-  // the unreadable picture the aggregation exists to avoid.
-  const merged = new Map<string, GraphEdge>();
-  for (const edge of edges) {
-    const prior = merged.get(edge.id);
-    merged.set(
-      edge.id,
-      prior === undefined
-        ? edge
-        : { ...prior, messages: [...new Set([...prior.messages, ...edge.messages])] },
-    );
-  }
-
-  for (const node of graph.nodes) {
-    if (node.kind !== "package" && inside.has(node.id)) nodes.push(node);
-  }
-  for (const { node, hidden } of ports.values()) {
-    const names = [...hidden].sort();
-    nodes.push({
-      ...node,
-      // Counted rather than named: the point of a port is that what is behind it is out of view, and a
-      // single name would read as a node that is in the view after all. The names are in the sidebar.
-      label: names.length === 1 ? "1 outside" : `${names.length} outside`,
-      hidden: names,
-    });
-  }
-
-  // Packages survive only where something still sits in them, by the same rule as an empty package in
-  // an unfiltered graph: an empty box suggests something is missing from the picture.
-  const occupied = new Set<SelectionId>();
-  for (const node of nodes) {
-    let parent = node.parent;
-    while (parent !== undefined) {
-      occupied.add(parent);
-      parent = graph.nodes.find((n) => n.id === parent)?.parent;
-    }
-  }
-  const packages = graph.nodes.filter((n) => n.kind === "package" && occupied.has(n.id));
-
-  return {
-    nodes: [...packages, ...nodes],
-    edges: [...merged.values()],
-    unresolved: graph.unresolved,
-  };
+  // 4. A port where an edge still leaves — the same narrowing a focus does, so it is the same code
+  // (`restrict`). Two implementations of "what does a narrowed graph look like" would eventually
+  // disagree, and nobody would think to look for a disagreement between the lens and the focus.
+  return restrict(graph, inside);
 }
