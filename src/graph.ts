@@ -108,6 +108,14 @@ export interface GraphEdge {
   readonly messageIds: readonly SelectionId[];
   /** `emits` points at a pipe; `reacts` points away from one. */
   readonly direction: "emits" | "reacts";
+  /**
+   * True when every emit on this edge is `best-effort`: the message may never be published at all.
+   *
+   * A different lossiness from the pipe's, and worth drawing separately. A lossy *pipe* may lose a
+   * message that was sent; a lossy *publication* means one was never sent, so there is no dead letter
+   * holding it and no redelivery coming (`03-topology.md` 2.9).
+   */
+  readonly bestEffort?: boolean;
   /** The subscription's name, where the edge is a `reacts` with one. */
   readonly subscription?: string;
   readonly incomplete?: boolean;
@@ -284,6 +292,8 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
     readonly messages: string[];
     readonly messageIds: SelectionId[];
     incomplete: boolean;
+    /** False as soon as one emit on the edge is atomic: the edge is only as lossy as its safest hop. */
+    bestEffort: boolean;
   }
   const groups = new Map<string, Group>();
 
@@ -293,6 +303,7 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
     messageRef: Ref,
     direction: "emits" | "reacts",
     subscription?: string,
+    publication?: "atomic" | "best-effort",
   ): void => {
     const pipeKey = keyOfRef(model, pipeRef);
     const pipe = pipeKey === undefined ? undefined : model.symbols.get(pipeKey);
@@ -318,9 +329,14 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
         messages: [],
         messageIds: [],
         incomplete: false,
+        // Starts true and is narrowed by the first atomic emit, so an edge carrying one reliable message
+        // among several is not drawn as lossy.
+        bestEffort: direction === "emits",
       };
       groups.set(key, group);
     }
+
+    if (publication !== undefined && publication !== "best-effort") group.bestEffort = false;
 
     const message = model.declFor(messageRef);
     if (message === undefined) {
@@ -342,7 +358,9 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
   };
 
   for (const service of servicesOf(model)) {
-    for (const emit of service.emits) edgeFor(service, emit.pipe, emit.message, "emits");
+    for (const emit of service.emits) {
+      edgeFor(service, emit.pipe, emit.message, "emits", undefined, emit.publication);
+    }
     for (const react of service.reacts) {
       edgeFor(service, react.pipe, react.message, "reacts", react.subscription);
     }
@@ -371,6 +389,7 @@ export function buildGraph(model: LinkedModel, options: GraphOptions = {}): Grap
       direction: g.direction,
       ...(g.subscription === undefined ? {} : { subscription: g.subscription }),
       ...(g.incomplete ? { incomplete: true } : {}),
+      ...(g.bestEffort ? { bestEffort: true } : {}),
     };
   });
 
@@ -404,7 +423,9 @@ export const marksOfNode = (node: GraphNode): ReadonlySet<string> =>
 // ---- trace events on the graph ----------------------------------------------
 
 /** Kinds that move a message *onto* a pipe. Everything else with a pipe is taking one off. */
-const OUTBOUND = new Set(["published", "schedule-fired", "saga-compensating"]);
+// `unpublished` is outbound too: it is a publication that was attempted and did not happen, so it belongs
+// on the edge the message would have travelled.
+const OUTBOUND = new Set(["published", "unpublished", "schedule-fired", "saga-compensating"]);
 
 /**
  * Kinds worth seeing differently.
@@ -413,6 +434,7 @@ const OUTBOUND = new Set(["published", "schedule-fired", "saga-compensating"]);
  * success is a failure you will not notice.
  */
 const BAD = new Set([
+  "unpublished",
   "rejected",
   "failed",
   "dead-lettered",

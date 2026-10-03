@@ -120,6 +120,7 @@ export const elementsOf = (graph: Graph): ElementDefinition[] => [
       // is no element with its id to look up.
       messageIds: e.messageIds,
       direction: e.direction,
+      bestEffort: e.bestEffort === true ? "yes" : "no",
       ...(e.subscription === undefined ? {} : { subscription: e.subscription }),
       incomplete: e.incomplete === true ? "yes" : "no",
     },
@@ -258,6 +259,13 @@ export const STYLE: cytoscape.StylesheetJson = [
     },
   },
   { selector: 'edge[incomplete = "yes"]', style: { "line-style": "dashed", "line-color": "var(--warn)" } },
+  {
+    // A publication that may never happen. Dotted rather than dashed, because the pipe uses dashed for
+    // its own lossiness and the two are different: one loses a message that was sent, the other never
+    // sends it.
+    selector: 'edge[bestEffort = "yes"]',
+    style: { "line-style": "dotted", width: 1 },
+  },
   // ---- a message going past -------------------------------------------------
   //
   // The edge itself pulses, so the path is legible even when the dot is between two nodes, and a dot

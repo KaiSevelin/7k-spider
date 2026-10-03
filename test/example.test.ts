@@ -97,6 +97,22 @@ describe("it contains what it says it contains", () => {
     expect(reached.some((d) => d.kind === "message")).toBe(true);
   });
 
+  it("a best-effort publication beside a lossy pipe, which are different axes", () => {
+    // The pipe may lose a reading that was sent; the publication means one may never be sent at all. Both
+    // are honest for a door sensor, and drawing them together is the clearest way to show they differ.
+    const m = model();
+    const controller = m.decls.find((d) => d.id.name === "DoorController");
+    expect(controller?.kind).toBe("service");
+    if (controller?.kind !== "service") return;
+    const sensed = controller.emits.find((e) => e.message.text.endsWith("DoorSensed"))!;
+    expect(sensed.publication).toBe("best-effort");
+
+    // And nothing waits for it, which is why `lossy-publish` says nothing.
+    const g = buildGraph(m);
+    const edge = g.edges.find((e) => e.bestEffort === true);
+    expect(edge?.to).toBe("pipe:parcel.lockers.telemetry");
+  });
+
   it("a lossy pipe that nothing depends on for progress", () => {
     const m = model();
     const telemetry = named(m, "telemetry");
