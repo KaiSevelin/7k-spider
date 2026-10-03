@@ -1,0 +1,14 @@
+{
+  // `.gitattributes` makes every file in this repository LF, because byte-exact round-tripping is a hard
+  // requirement (`docs/spec/20-ir.md` section 7.2 in the language repository). Setting it here means an
+  // edit does not arrive as CRLF and get normalised on the way into git.
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  // The workspace's own TypeScript, so the editor and `npm run typecheck` agree.
+  "typescript.tsdk": "node_modules/typescript/lib",
+
+  "[json]": { "editor.defaultFormatter": "vscode.json-language-features" },
+  "search.exclude": { "**/dist": true, "**/node_modules": true }
+}

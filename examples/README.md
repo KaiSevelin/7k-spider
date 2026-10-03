@@ -17,6 +17,9 @@ npm run demo
 
 Then open **http://127.0.0.1:7007**.
 
+Or, in VS Code, press **F5** — the `Spider: demo` configuration runs the same command, opens the browser
+when the server says it is ready, and leaves the debugger attached so breakpoints in `src/` work.
+
 `npm run demo` is `spider serve examples --trace examples/handover.ndjson`, so the graph comes up with a
 trace already loaded.
 

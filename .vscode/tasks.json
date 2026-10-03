@@ -1,0 +1,44 @@
+{
+  // For Ctrl-Shift-B and the Run Task menu. F5 does not use these: the launch configurations run the
+  // program directly, so the debugger owns the process it is debugging.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // The default build task, because typechecking is what building this is. It catches things the
+      // tests do not: vitest never typechecks, and both gates have caught different real bugs.
+      "label": "typecheck",
+      "type": "npm",
+      "script": "typecheck",
+      "problemMatcher": ["$tsc"],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "test",
+      "type": "npm",
+      "script": "test",
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "panel": "shared" }
+    },
+    {
+      // The same as F5's default, for when you want it running without a debugger attached.
+      "label": "demo",
+      "type": "npm",
+      "script": "demo",
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": { "panel": "dedicated" }
+    },
+    {
+      // Needs a 7k-sandbox checkout beside this one. The trace is committed so the demo works without
+      // it, and `test/example.test.ts` validates the committed one — so a stale trace fails rather
+      // than misleads.
+      "label": "regenerate the example trace",
+      "type": "npm",
+      "script": "trace",
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated" }
+    }
+  ]
+}

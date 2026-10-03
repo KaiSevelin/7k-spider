@@ -1,0 +1,109 @@
+{
+  // Press F5 and Spider starts with the example loaded, and the browser opens itself.
+  //
+  // `node --import tsx` rather than `npx tsx`: the debugger attaches to the process it started, so
+  // breakpoints in src/*.ts work without a build step, and there is no npx shim in between to confuse
+  // which process is being debugged.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // First in the list, so this is what F5 does.
+      "name": "Spider: demo",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": ["serve", "examples", "--trace", "examples/handover.ndjson"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      // Matches what the command prints: `7k Spider  http://127.0.0.1:7007/`
+      "serverReadyAction": {
+        "pattern": "7k Spider\\s+(https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    },
+    {
+      // The same, but the browser comes up with a debugger attached, so breakpoints in src/web/*.ts
+      // work too. The bundle carries an inline source map, which is what makes that possible.
+      "name": "Spider: demo, debugging the page",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": ["serve", "examples", "--trace", "examples/handover.ndjson"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "serverReadyAction": {
+        "pattern": "7k Spider\\s+(https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "debugWithEdge",
+        "webRoot": "${workspaceFolder}"
+      }
+    },
+    {
+      // Any workspace, not just the example. The paths are asked for rather than guessed.
+      "name": "Spider: serve a workspace…",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": ["serve", "${input:paths}"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "serverReadyAction": {
+        "pattern": "7k Spider\\s+(https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    },
+    {
+      // The graph with no trace at all, which is how it looks before anything has run.
+      "name": "Spider: the example, no trace",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": ["serve", "examples"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "serverReadyAction": {
+        "pattern": "7k Spider\\s+(https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    },
+    {
+      "name": "Vitest: every test",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Vitest: this file",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "${relativeFile}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "paths",
+      "type": "promptString",
+      "description": "Which .7k files or directories to serve",
+      "default": "../7K/examples"
+    }
+  ]
+}

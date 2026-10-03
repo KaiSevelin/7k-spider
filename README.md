@@ -18,6 +18,10 @@ npm run demo        # a parcel locker network, with a trace already loaded
 
 Then open http://127.0.0.1:7007. See [examples/README.md](examples/README.md) for what to try.
 
+**In VS Code**, press **F5**. That runs the same thing under the debugger and opens the browser itself,
+with breakpoints working in `src/` without a build step. `Spider: demo, debugging the page` does the same
+and attaches to the browser too, so breakpoints in `src/web/` work as well.
+
 Or point it at your own workspace:
 
 ```

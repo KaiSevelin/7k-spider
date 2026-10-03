@@ -32,7 +32,8 @@
     "test": "vitest run",
     "typecheck": "tsc --build --force && tsc -p tsconfig.test.json",
     "serve": "tsx src/cli.ts serve",
-    "demo": "tsx src/cli.ts serve examples --trace examples/handover.ndjson"
+    "demo": "tsx src/cli.ts serve examples --trace examples/handover.ndjson",
+    "trace": "tsx scripts/trace.ts"
   },
   "dependencies": {
     "@sevenk/core": "file:../7K/packages/core",
