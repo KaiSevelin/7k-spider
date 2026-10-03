@@ -1,0 +1,28 @@
+{
+  "_comment": "Named lenses for the parcel locker example. Presentation, not language: a saved filter on the diagram, feeding no analysis. Committed, unlike the other two sidecars, because named lenses are worth sharing while layout coordinates and composer hints are per-developer. Deleting this file loses saved lenses and nothing else. See ../../docs/design.md section 4.2.",
+
+  "Handover": {
+    "_why": "The delivery process end to end, with the locker estate behind a port: what a parcel's journey touches, and nothing about how a door works.",
+    "include": ["package:parcel.delivery", "package:parcel.notify"]
+  },
+
+  "Estate": {
+    "_why": "The hardware and what drives it. Everything in the delivery package is aggregated into ports, which is what a perimeter view of the lockers looks like.",
+    "include": ["package:parcel.lockers"]
+  },
+
+  "PiiFlow": {
+    "_why": "Where personal data goes. Only works because labels propagate: @pii is declared on two values in parcel.common, and it reaches every record, message and pipe that carries them.",
+    "include": ["label:pii"]
+  },
+
+  "Perimeter": {
+    "_why": "Where the system ends. `label:external` selects annotations as well as declared labels, which is the only reason this selector can work at all: `label external` is an error to declare.",
+    "include": ["label:external"]
+  },
+
+  "Lossy": {
+    "_why": "The one pipe that may lose a message, and the two things on either side of it. Nothing may depend on it for progress.",
+    "include": ["pipe:parcel.lockers.telemetry"]
+  }
+}

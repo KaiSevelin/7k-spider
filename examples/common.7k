@@ -1,0 +1,68 @@
+// A parcel locker network, in four packages. This is Spider's example workspace: it exists to be
+// looked at, so it deliberately contains the things the three views have something to say about —
+// a boundary, PII that propagates, a lossy pipe, a saga with a deadline, a schedule across a
+// daylight-saving change, and a command that retries against flaky hardware.
+//
+// This package is the shared vocabulary. It declares no messages and no services: it is a
+// dependency of the other three and depends on none of them, so there is no package cycle.
+
+package parcel.common
+
+label pii
+
+// ---------------------------------------------------------------- values
+
+value ParcelRef  : string { length 1..32; example "PCL-80412" }
+value LockerId   : string { length 1..16; normalize upper; example "STO-114" }
+value DoorId     : string { length 1..8;  normalize upper; example "A07" }
+value OperatorRef: string { length 1..32; example "nordic-lockers" }
+value CourierRef : string { length 1..32; example "courier-71" }
+
+// A collection code. Six digits, so it can be read over a phone.
+value PinCode    : string { length 6; pattern /^[0-9]{6}$/; example "418920" }
+
+// Personal data, labelled once here. It propagates upward from this declaration to every record,
+// message and pipe that carries it (`01-kernel.md` section 6), which is what makes the PiiFlow
+// lens in `.7k/views.json` mean something.
+@pii value PhoneNumber : string { length 5..20; pattern /^[+][0-9]{5,19}$/; example "+46701234567" }
+@pii value PersonName  : string { length 1..80; normalize trim, collapseSpace }
+
+enum Size {
+  Small
+  Medium
+  Large
+}
+
+enum Outcome {
+  Collected
+  Returned
+  Abandoned
+}
+
+// ---------------------------------------------------------------- records
+
+record Recipient {
+  name:  PersonName
+  phone: PhoneNumber
+}
+
+record Compartment {
+  locker: LockerId
+  door:   DoorId
+  size:   Size
+}
+
+// ---------------------------------------------------------------- envelopes
+//
+// Declared here and spliced into every message of every package that says
+// `envelopes common.Trace, common.Operator`. An envelope travels on every hop (D50).
+
+envelope Trace {
+  correlationId: uuid @role(correlation)
+  causationId:   uuid @derive(inbound.id) @role(causation)
+}
+
+envelope Operator {
+  operatorId: OperatorRef @role(partitionKey)
+  actor:      CourierRef  @role(subject)
+}

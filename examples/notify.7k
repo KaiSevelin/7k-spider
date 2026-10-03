@@ -1,0 +1,75 @@
+// Telling the recipient where their parcel is.
+//
+// The package that carries personal data across the system boundary, which is the whole point of
+// having it separate: `label:pii` and `label:external` both select here, and they select different
+// things.
+
+package parcel.notify
+
+import parcel.common
+
+envelopes common.Trace, common.Operator
+
+// ---------------------------------------------------------------- messages
+
+// Asked for by the delivery saga. The recipient and the code travel together, because a
+// notification without the code is not a notification.
+message NotifyRecipient v1.0 @command {
+  parcelRef: common.ParcelRef @role(businessKey)
+  recipient: common.Recipient
+  pin:       common.PinCode
+  locker:    common.LockerId
+}
+
+message SendSms v1.0 @command {
+  parcelRef: common.ParcelRef @role(businessKey)
+  phone:     common.PhoneNumber
+  body:      string { length 1..320 }
+}
+
+message SmsSent v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+}
+
+message SmsRejected v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+  detail:    string { length 1..200 }
+}
+
+// ---------------------------------------------------------------- pipes
+
+pipe commands : queue {
+  ordering by operatorId
+  carries   NotifyRecipient, SendSms
+}
+
+pipe events : topic {
+  ordering  by operatorId
+  retention 7d
+}
+
+// ---------------------------------------------------------------- services
+
+// Composes the message a person reads. Its own service because the wording is a decision, and
+// because it is the only thing that needs to see both the code and the phone number.
+service NotifyService {
+  emits SendSms to commands
+
+  reacts NotifyRecipient from commands {
+    once per parcelRef
+    replies none
+  }
+}
+
+// The vendor. A boundary, so the JSON Schema projection for its pipe is `strict`.
+service SmsGateway @external {
+  emits SmsSent     to events
+  emits SmsRejected to events
+
+  reacts SendSms from commands {
+    replies SmsSent | SmsRejected
+    // A text message to a person is worth several attempts, and a long enough backoff that a
+    // flapping vendor does not become a flood.
+    retry   5 after 10s max 5m
+  }
+}

@@ -1,0 +1,270 @@
+// The process: a parcel goes into a compartment, the recipient is told, and it is either
+// collected or it goes back.
+//
+// This is where the saga and the schedule are, so it is the package the sequence diagram has the
+// most to show about: a deadline that fires days later, and a nightly sweep across a
+// daylight-saving change.
+
+package parcel.delivery
+
+import parcel.common
+import parcel.lockers
+import parcel.notify
+
+envelopes common.Trace, common.Operator
+
+// ---------------------------------------------------------------- messages
+
+// Crosses the boundary: a courier's handset says a parcel is in the locker.
+message DropParcel v1.0 @command {
+  parcelRef: common.ParcelRef @role(businessKey)
+  locker:    common.LockerId
+  size:      common.Size
+  recipient: common.Recipient
+}
+
+message ParcelAccepted v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+  locker:    common.LockerId
+}
+
+// How a handover ended. One event with three outcomes rather than three events, because there is one
+// fact here and a reader should not have to learn which of three names carries it.
+message HandoverFinished v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+  outcome:   common.Outcome
+  // Why, where there is a why: the saga's own reason for rejecting.
+  detail:    string? { length 1..200 }
+}
+
+message ReserveCompartment v1.0 @command {
+  parcelRef: common.ParcelRef @role(businessKey)
+  locker:    common.LockerId
+  size:      common.Size
+}
+
+message CompartmentReserved v1.0 @event {
+  parcelRef:   common.ParcelRef @role(businessKey)
+  compartment: common.Compartment
+  // The size that was asked for, carried so the rule below has two sides to compare.
+  size:        common.Size
+  pin:         common.PinCode
+
+  // A compartment has to match what was asked for, which no field can say on its own. This is the
+  // kind of rule the JSON Schema projection cannot express (D90) and the composer still checks.
+  invariant compartment.size == size
+}
+
+message CompartmentFull v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+  locker:    common.LockerId
+}
+
+message ReleaseCompartment v1.0 @command {
+  parcelRef:   common.ParcelRef @role(businessKey)
+  compartment: common.Compartment
+}
+
+message CompartmentReleased v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+}
+
+// The recipient opened the door with their code.
+message ParcelCollected v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+}
+
+// Fired by the nightly schedule. The day is the business key, so a timer that fires twice sweeps
+// once.
+message SweepExpired v1.0 @command {
+  day: date @role(businessKey)
+}
+
+message SweepFinished v1.0 @event {
+  day:     date @role(businessKey)
+  returned: int { range 0.. }
+}
+
+// ---------------------------------------------------------------- pipes
+
+// The boundary. Its producer is `@external`, so Core derives this as a boundary pipe without
+// being told, and Spider draws it with an accent border.
+pipe inbound : queue {
+  ordering by operatorId
+}
+
+pipe commands : queue {
+  ordering by operatorId
+  carries   ReserveCompartment, ReleaseCompartment, SweepExpired
+}
+
+pipe events : topic {
+  ordering  by operatorId
+  retention 30d
+}
+
+// ---------------------------------------------------------------- services
+
+// The courier's handset. Drops parcels, and watches for the answer so it can show the courier
+// whether the drop worked.
+service CourierApp @external {
+  emits DropParcel to inbound
+
+  reacts ParcelAccepted    from events { once per parcelRef; replies none }
+  reacts HandoverFinished  from events { once per parcelRef; replies none }
+}
+
+// The recipient's phone. Opens the door, which is how a collection is observed at all.
+service RecipientApp @external {
+  emits ParcelCollected to events
+}
+
+// Accepts drops and hosts the Handover saga.
+service DeliveryService {
+  emits ParcelAccepted    to events
+  emits HandoverFinished  to events
+  emits ReserveCompartment to commands
+  emits ReleaseCompartment to commands
+  emits notify.NotifyRecipient to notify.commands
+
+  reacts DropParcel from inbound {
+    // A claim check that means something here: `inbound` is where an `@external` courier publishes,
+    // so the sender really is the originator.
+    requires claim.sub == envelope.actor
+             and claim.scope contains "parcels.drop"
+    // One reply. A handler that starts a saga answers one way, and what became of the parcel is the
+    // saga's to say — which is why there is a single `HandoverFinished` rather than an outcome per
+    // terminal state.
+    replies  ParcelAccepted
+  }
+
+  // The saga drives these; the service only has to receive them.
+  reacts CompartmentReserved  from events { replies none }
+  reacts CompartmentFull      from events { replies none }
+  reacts CompartmentReleased  from events { replies none }
+  reacts ParcelCollected      from events { replies none }
+}
+
+// Owns the compartments. Separate from DeliveryService because a locker is a scarce resource and
+// whoever hands them out has to be the only thing that does.
+service CompartmentService {
+  emits CompartmentReserved to events
+  emits CompartmentFull     to events
+  emits CompartmentReleased to events
+  emits lockers.OpenDoor    to lockers.commands
+
+  reacts ReserveCompartment from commands {
+    once per parcelRef
+    replies CompartmentReserved | CompartmentFull
+  }
+
+  reacts ReleaseCompartment from commands {
+    once per parcelRef
+    replies CompartmentReleased
+    // The door has to open for the parcel to come back out, and hardware is flaky.
+    retry   4 after 5s max 2m
+  }
+
+  // The hardware answers.
+  reacts lockers.DoorOpened from lockers.events { replies none }
+  reacts lockers.DoorJammed from lockers.events { replies none }
+}
+
+// Owns the nightly sweep. Its own service because a schedule's `send` is routed by the hosting
+// service's `emits`, so whoever holds the recurring work holds the routing for it.
+service SweepService {
+  emits SweepExpired  to commands
+  emits SweepFinished to events
+
+  reacts SweepExpired from commands {
+    // The day is the business key, so a timer that fires twice sweeps once.
+    once per day
+    replies SweepFinished
+    // Long enough that a stuck sweep is still retrying when tomorrow's is due, which is what makes
+    // the no-overlap rule and `onMissed` observable rather than theoretical.
+    retry   3 after 4h max 8h
+  }
+}
+
+// Reads the outcomes. Exists so the events above are consumed by something, which is what
+// `orphan-message` is for asking about.
+service Reporting {
+  reacts HandoverFinished from events { once per parcelRef; replies none }
+  reacts SweepFinished    from events { once per day;       replies none }
+  reacts notify.SmsSent     from notify.events { once per parcelRef; replies none }
+  reacts notify.SmsRejected from notify.events { once per parcelRef; replies none }
+}
+
+// ===========================================================================
+// The Process layer.
+// ===========================================================================
+
+saga Handover v1.0 {
+
+  start on DropParcel keyed by parcelRef {
+    locker    = message.locker
+    size      = message.size
+    recipient = message.recipient
+  }
+
+  state {
+    locker:      common.LockerId
+    size:        common.Size
+    recipient:   common.Recipient
+    compartment: common.Compartment
+    pin:         common.PinCode
+  }
+
+  step reserve {
+    send ReserveCompartment
+
+    on CompartmentReserved { compartment = message.compartment; pin = message.pin }
+    on CompartmentFull     reject "no compartment of that size"
+    on timeout 30s         reject "the locker did not answer"
+
+    // Co-located with the step it reverses, and run only if this step completed. The inverse needs
+    // the compartment, which only the saga holds — recorded by the action above.
+    undo with ReleaseCompartment { compartment = state.compartment }
+  }
+
+  // Telling the recipient and waiting for them is one step, not two. A step that sent a notification
+  // and then awaited nothing could only ever end in its own timeout, which the sandbox pointed out by
+  // ending every run that way.
+  step handover {
+    send notify.NotifyRecipient { recipient = state.recipient; pin = state.pin; locker = state.locker }
+
+    on ParcelCollected
+
+    // Three days, which is why the deadline below is the interesting clause in this file.
+    on timeout 72h reject "nobody collected it"
+
+    // A text message cannot be unsent, and the compartment is released by the previous step's undo.
+    undo none
+  }
+
+  // Longer than the step timeout on purpose: a parcel that is stuck for a week is a different
+  // problem from one nobody collected, and the two should not look the same.
+  on deadline 168h abandon
+
+  // An enum member travels as its name (`01-kernel.md` 7.1), so it is written as one. A bare
+  // `Collected` reads as a path and holds no value, which is what the runtime reported.
+  on complete send HandoverFinished { outcome = "Collected" }
+
+  // `reject "nobody collected it"` would be decoration if nothing could read it back, which is what
+  // the `detail` field is for.
+  on reject   send HandoverFinished { outcome = "Returned"; detail = terminal.reason }
+
+  on abandon  send HandoverFinished { outcome = "Abandoned" }
+}
+
+// A local-time schedule across a daylight-saving change either fires twice or not at all, so the
+// timezone is required; and after an outage `skip` loses a day's returns, so `onMissed` is too.
+schedule NightlySweep {
+  every    "0 3 * * *" in "Europe/Stockholm"
+
+  // The day the occurrence was due, not the day it ran. A catch-up fires late, and sweeping the
+  // wrong day is the bug this avoids.
+  send     SweepExpired { day = occurrence.date }
+
+  onMissed all
+}

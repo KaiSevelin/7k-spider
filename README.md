@@ -13,18 +13,26 @@ The **graph** works. Services, pipes, packages and the boundary, laid out so tha
 
 ```
 npm install
-npm run serve ../7K/examples                        # the graph
-npm run serve ../7K/examples -- --trace run.ndjson  # and watch a trace play over it
+npm run demo        # a parcel locker network, with a trace already loaded
 ```
 
-Then open http://127.0.0.1:7007. `Space` plays, arrows step, `s` opens the sequence diagram,
-`c` the composer, `n` connects two things, `Ctrl-K` finds things, `f` focuses.
+Then open http://127.0.0.1:7007. See [examples/README.md](examples/README.md) for what to try.
+
+Or point it at your own workspace:
+
+```
+npm run serve <paths>                        # the graph
+npm run serve <paths> -- --trace run.ndjson  # and watch a trace play over it
+```
+
+`Space` plays, arrows step, `s` opens the sequence diagram, `c` the composer, `n` connects two things,
+`Ctrl-K` finds things, `f` focuses.
 
 It watches the files, so editing a `.7k` redraws the page — and because the layout is deterministic,
 the parts you did not change stay where they were.
 
 ```
-npm test        # 253 tests
+npm test        # 269 tests
 npm run build
 ```
 

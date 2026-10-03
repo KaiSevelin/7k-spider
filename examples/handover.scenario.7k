@@ -1,0 +1,177 @@
+// Scenarios for the parcel locker network, written to be watched rather than only to pass.
+//
+// Each one exercises something a different view has to show: a happy path for the sequence diagram,
+// a three-day wait for the timeline, a jammed door for the retry backoff, and the nightly sweep for
+// a schedule across a daylight-saving change.
+
+scenarios for parcel.delivery
+
+// ---------------------------------------------------------------------------
+// A baseline. Scenarios inherit it and override only what they are testing.
+// ---------------------------------------------------------------------------
+
+mockset Working {
+  mock CompartmentService {
+    on ReserveCompartment reply CompartmentReserved {
+      compartment: { locker: "STO-114", door: "A07", size: "Medium" },
+      size:        "Medium",
+      pin:         "418920"
+    } after 200ms
+    on ReleaseCompartment reply CompartmentReleased after 200ms
+  }
+  mock SweepService {
+    on SweepExpired reply SweepFinished { returned: 3 } after 2s
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. The happy path: dropped, reserved, notified, collected.
+// ---------------------------------------------------------------------------
+
+scenario HandoverSucceeds {
+  seed 1
+  use  Working
+
+  at 0s publish DropParcel as CourierApp
+    with claims   { sub: "courier-71", scope: "parcels.drop" }
+    with envelope { operatorId: "nordic-lockers", actor: "courier-71" }
+    {
+      parcelRef: "PCL-80412",
+      locker:    "STO-114",
+      size:      "Medium",
+      recipient: { name: "Alva Lind", phone: "+46701234567" }
+    }
+
+  expect  ParcelAccepted     on events
+  expect  ReserveCompartment on commands
+  advance 1s
+  expect  notify.NotifyRecipient on notify.commands
+
+  // The recipient turns up and opens the door.
+  at 30s publish ParcelCollected as RecipientApp
+    with envelope { operatorId: "nordic-lockers", actor: "courier-71" }
+    { parcelRef: "PCL-80412" }
+
+  advance 1s
+  expect saga Handover["PCL-80412"].state == complete
+  expect HandoverFinished on events
+}
+
+// ---------------------------------------------------------------------------
+// 2. Nobody comes. Three days of nothing, then the parcel goes back — which means
+//    the reserve step's `undo` runs. The timeline draws the gap at its real size.
+// ---------------------------------------------------------------------------
+
+scenario NobodyCollects {
+  seed 2
+  use  Working
+
+  at 0s publish DropParcel as CourierApp
+    with claims   { sub: "courier-71", scope: "parcels.drop" }
+    with envelope { operatorId: "nordic-lockers", actor: "courier-71" }
+    {
+      parcelRef: "PCL-80413",
+      locker:    "STO-114",
+      size:      "Medium",
+      recipient: { name: "Bo Nyquist", phone: "+46707654321" }
+    }
+
+  advance 1s
+  expect notify.NotifyRecipient on notify.commands
+
+  // Past the await step's 72h timeout, and nothing arrives.
+  advance 73h
+  expect ReleaseCompartment on commands
+  expect HandoverFinished   on events
+  expect saga Handover["PCL-80413"].state == reject
+}
+
+// ---------------------------------------------------------------------------
+// 3. The locker is full, so the drop is refused before anyone is told anything.
+// ---------------------------------------------------------------------------
+
+scenario LockerFull {
+  seed 3
+
+  mock CompartmentService {
+    on ReserveCompartment reply CompartmentFull { locker: "STO-114" } after 200ms
+  }
+
+  at 0s publish DropParcel as CourierApp
+    with claims   { sub: "courier-71", scope: "parcels.drop" }
+    with envelope { operatorId: "nordic-lockers", actor: "courier-71" }
+    {
+      parcelRef: "PCL-80414",
+      locker:    "STO-114",
+      size:      "Large",
+      recipient: { name: "Cleo Ahlgren", phone: "+46700000001" }
+    }
+
+  advance 1s
+  expect saga Handover["PCL-80414"].state == reject
+  // Nobody was told about a parcel that never went in.
+  expect no notify.NotifyRecipient on notify.commands
+}
+
+// ---------------------------------------------------------------------------
+// 4. A drop without the scope for it. Refused before the handler runs, and never
+//    retried: a rejection is not a failure.
+// ---------------------------------------------------------------------------
+
+scenario DropWithoutScope {
+  seed 4
+  use  Working
+
+  at 0s publish DropParcel as CourierApp
+    with claims   { sub: "courier-71", scope: "parcels.read" }
+    with envelope { operatorId: "nordic-lockers", actor: "courier-71" }
+    {
+      parcelRef: "PCL-80415",
+      locker:    "STO-114",
+      size:      "Small",
+      recipient: { name: "Dag Ohlsson", phone: "+46700000002" }
+    }
+
+  advance 1s
+  expect rejected DropParcel at DeliveryService reason unauthorized
+}
+
+// ---------------------------------------------------------------------------
+// 5. The compartment service does not answer at all. The reserve step's own
+//    timeout fires, which is a different thing from the saga's deadline.
+// ---------------------------------------------------------------------------
+
+scenario LockerNeverAnswers {
+  seed 5
+
+  mock CompartmentService {
+    on ReserveCompartment hang
+  }
+
+  at 0s publish DropParcel as CourierApp
+    with claims   { sub: "courier-71", scope: "parcels.drop" }
+    with envelope { operatorId: "nordic-lockers", actor: "courier-71" }
+    {
+      parcelRef: "PCL-80416",
+      locker:    "STO-114",
+      size:      "Medium",
+      recipient: { name: "Elsa Wikner", phone: "+46700000003" }
+    }
+
+  advance 31s
+  expect saga Handover["PCL-80416"].state == reject
+}
+
+// ---------------------------------------------------------------------------
+// 6. The nightly sweep, three days running. Twenty-four hour gaps, which the
+//    timeline marks and the transport does not wait for.
+// ---------------------------------------------------------------------------
+
+scenario SweepRunsEachNight {
+  seed 6
+  use  Working
+
+  advance 72h
+  expect SweepExpired  on commands count 3
+  expect SweepFinished on events   count 3
+}
