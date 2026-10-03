@@ -18,13 +18,13 @@ npm run serve ../7K/examples -- --trace run.ndjson  # and watch a trace play ove
 ```
 
 Then open http://127.0.0.1:7007. `Space` plays, arrows step, `s` opens the sequence diagram,
-`c` the composer, `Ctrl-K` finds things, `f` focuses.
+`c` the composer, `n` connects two things, `Ctrl-K` finds things, `f` focuses.
 
 It watches the files, so editing a `.7k` redraws the page — and because the layout is deterministic,
 the parts you did not change stay where they were.
 
 ```
-npm test        # 229 tests
+npm test        # 253 tests
 npm run build
 ```
 
@@ -137,6 +137,20 @@ one is nudged only as far as it must be to clear it. No saved position depends o
 
 There is a test that re-runs ELK over a bigger graph and asserts the saved node did not budge.
 
+## Editing the model
+
+`n`, then click one end and the other. Because the graph is **bipartite**, a connection is one of exactly
+two things and which one follows from which end you started at — so there is nothing to choose and no
+handle to miss. Click a service then a pipe and it is an `emits`; the other way round and it is a `reacts`.
+
+Nothing is written until you have read it. The proposal shows the clause **as it will be written** — the
+reference through the right import, the file's own indentation — because an editor that wrote the file the
+instant two nodes were clicked is one you stop clicking in.
+
+The mutation API is Core's, not Spider's: the specification says "one implementation, three front ends".
+Every byte outside the edit is unchanged, and connect-then-disconnect is byte-identical — both verified on
+the real examples.
+
 ## Three ways to narrow what you are looking at
 
 A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived
@@ -185,7 +199,7 @@ From there, three rules:
 2. **Replay** — a trace animated over the graph, timeline as transport. **Done.**
 3. **Sequence** — a sequence diagram, with all three views linked. **Done.**
 4. **Composer, read-only** — build a message and watch it validated. **Done.**
-5. **Mutation** — saved layout **done**; editing the model itself is not.
+5. **Mutation** — saved layout and editing the model. **Done**, except `rename` and `moveToPackage`.
 
 Read-only first and mutation last, because the authoring experience already exists in the
 [VS Code extension](https://github.com/KaiSevelin/7k-vscode) while surgical mutation is the riskiest

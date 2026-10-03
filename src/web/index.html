@@ -425,6 +425,79 @@
       #sidebar dt { color: var(--ink-dim); }
       #sidebar dd { margin: 0; word-break: break-all; }
 
+      /* A proposal, shown before anything is written. Section 7 of 20-ir.md: a caller gets the edits and
+         the diagnostics so it can preview — an editor that wrote the file the instant two nodes were
+         clicked would be one you stop clicking in. */
+      #propose {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: min(600px, calc(100% - 24px));
+        max-height: 76%;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        box-shadow: 0 10px 34px rgb(0 0 0 / 26%);
+      }
+      #propose[hidden] { display: none; }
+      #proposeBody { flex: 1; overflow: auto; padding: 10px 12px; }
+
+      .panelFoot {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        border-top: 1px solid var(--line);
+      }
+      #proposeState { flex: 1; color: var(--ink-dim); }
+      #proposeState.bad { color: var(--warn); }
+      #proposeApply {
+        font: inherit;
+        color: var(--surface);
+        background: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 3px 12px;
+        cursor: pointer;
+      }
+      #proposeApply[disabled] { opacity: 0.45; cursor: default; }
+
+      /* The clause that will be written, as it will be written. */
+      #proposeBody pre {
+        margin: 6px 0 0;
+        padding: 8px 10px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        white-space: pre-wrap;
+        font: 11px/1.5 var(--mono);
+      }
+      #proposeBody pre.removing { border-color: var(--warn); color: var(--warn); }
+      #proposeBody .where { color: var(--ink-dim); font-size: 11px; }
+      #proposeBody .why { color: var(--warn); margin-top: 6px; }
+      #proposeBody ul { margin: 4px 0 0; padding: 0; list-style: none; max-height: 34vh; overflow: auto; }
+      #proposeBody li button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        color: var(--ink);
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        padding: 3px 6px;
+        cursor: pointer;
+      }
+      #proposeBody li button:hover { background: var(--package); }
+      #proposeBody li button .onPipe { color: var(--ink-dim); font-size: 10px; margin-left: 6px; }
+
+      /* While a connection is being made, the nodes that could be its other end stand out. */
+      body.connecting #graph { cursor: crosshair; }
+      #connect.armed { color: var(--accent); border-color: var(--accent); }
+
       /* Opened on demand. Six warnings on a clean model meant this used to float over the graph
          permanently, competing with the sidebar; honesty needs a count you cannot miss, not a panel
          you cannot close. */
@@ -480,6 +553,7 @@
         sequence
       </button>
       <button type="button" id="toggleCompose" title="build a message (c)">compose</button>
+      <button type="button" id="connect" title="connect two things (n)">connect&hellip;</button>
       <span id="status">loading…</span>
       <span id="focus" hidden>
         focus <b id="focusName"></b>
@@ -517,6 +591,18 @@
         <pre id="composeOut"></pre>
       </aside>
       <aside id="sidebar"></aside>
+      <div id="propose" hidden>
+        <header class="panelHead">
+          <b id="proposeWhat"></b>
+          <button type="button" id="proposeClose" title="cancel (Esc)">&times;</button>
+        </header>
+        <div id="proposeBody"></div>
+        <footer class="panelFoot">
+          <span id="proposeState"></span>
+          <button type="button" id="proposeApply">write it</button>
+        </footer>
+      </div>
+
       <div id="problems">
         <button type="button" id="problemsClose" title="close">&times;</button>
         <pre id="problemsText"></pre>

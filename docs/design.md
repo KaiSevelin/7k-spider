@@ -672,23 +672,110 @@ draggable only when the host passes a handler that can save: `autoungrabify` is 
 
 ### 8.5 What is left, and what it needs
 
-**Model mutation.** Adding a service, renaming one, adding an `emits`. Three things it needs that layout
-did not:
-
-- **Surgical text editing.** The source *is* the model, so a rename edits text in place. Regenerating a
-  file from the IR would reformat it, lose comments, and make every change an unreviewable diff.
-- **An answer to the unsaved buffer.** A browser cannot know that the file is open in an editor with
-  unsaved changes; a VS Code webview can ask. That asymmetry may be what decides the host for this
-  increment rather than the other way round.
-- **Rename touching the sidecars in the same operation** (`20-ir.md` 6.4), or a rename silently discards
-  every saved position and lens entry that named the old name.
+**Model mutation** is section 9. Of the three things listed here as prerequisites, one was real —
+surgical text editing, which Core's mutation API does — one was already answered by the specification
+(section 7.1: Spider holds no unsaved buffer, so the conflict does not arise), and one remains: **rename
+touching the sidecars in the same operation** (`20-ir.md` 6.4), which is why `rename` is not implemented.
 
 **Collapsing a package**, where coordinates are relative to the collapsed parent, so collapsing does not
 invalidate its children's positions. The `collapsed` list is read and kept; nothing acts on it yet.
 
 **Edge waypoints** are read, kept and written back untouched. Nothing draws them.
 
-## 9. Increments
+## 9. Editing the model
+
+Increment 5, second half. `n`, or the **connect…** button: click one end, click the other, choose a
+message, read what will be written, write it.
+
+### 9.1 The mutation API is Core's
+
+`20-ir.md` section 7 specified it before anything needed it, and said who for: "Spider edits through this.
+So does any CLI refactor command and any future LSP code action — **one implementation, three front
+ends**." So Spider calls it rather than having one (7k D98), and gets edits and diagnostics rather than a
+changed file.
+
+Section 7.1 also settled something this document had been calling an open question:
+
+> **Spider has no unsaved buffer.** Every mutation writes the file immediately, and a file watcher reloads
+> on external change. That one rule eliminates the entire class of conflicts between a graph editor
+> holding dirty state and an external editor changing the same file. Undo is a command stack of inverse
+> mutations, not a dirty buffer.
+
+Section 8.5 of this document previously listed "an answer to the unsaved buffer" as work to be done, and
+guessed that it might decide the host. It was answered in the specification all along, and the answer
+needs no host privileges at all.
+
+### 9.2 Click, do not drag
+
+Cytoscape draws no edges of its own, and the extension that adds it brings an interaction model with it.
+But the real reason is that **the model is bipartite**: a connection is one of exactly two things, and
+which one follows from which end you started at. Click a service then a pipe and it is an `emits`; click a
+pipe then a service and it is a `reacts`. There is nothing to choose and no handle to miss, and it works
+from a touch screen and a keyboard, which a drag does not.
+
+Connecting two services is the thing a reader will try first, and it earns a sentence rather than a
+shrug — "a message goes through a pipe, which is the point". A dead letter cannot be an end, because the
+runtime writes it rather than a service; a port cannot, because it stands for what is out of view.
+
+**Messages already on the pipe are offered first.** Joining existing traffic is the common case, and
+naming a message nothing else carries is how a pipe ends up carrying one of everything.
+
+### 9.3 Nothing is written until it has been read
+
+Section 7: a caller gets "the resulting text edits plus diagnostics, so a caller can **preview** before
+applying". So the proposal panel shows the clause **as it will be written** — the aliased reference, the
+file's own indentation — and the file it goes in, before anything happens. An editor that wrote a file the
+instant two nodes were clicked is one you stop clicking in.
+
+A diagnostic that is not an error does not block the write. An edit whose reference needs an import the
+file lacks is still offered, because the caller may be about to add the import; it is simply never offered
+*silently*.
+
+### 9.4 The page computes, the server writes
+
+The page has the model, the trees and the sources, so it computes the mutation with Core and sends the
+**before and after text** of each changed file. The server's one job is the one decision left to it:
+**is this still the file the edit was computed against?** If not it refuses, and refuses *all* of it,
+because half a mutation is worse than none.
+
+That is the only conflict that survives section 7.1's rule. Spider holds no buffer, so there is no dirty
+state to reconcile; what remains is a file edited between the page reading it and the page writing it, and
+the honest answer is to refuse and let the watcher's reload bring the page up to date.
+
+The server also refuses a path it is not already serving. A write path that would touch anything else is a
+write path somebody eventually points somewhere unfortunate.
+
+### 9.5 What this is verified against
+
+The pure parts have tests. The loop is verified against a copy of the real examples:
+
+```
+connectReact: reacts acme.retail.ticketing.TicketIssued from … on … Reporting
+  possible: true   diagnostics: none
+  would write:
+      reacts ticketing.TicketIssued from ticketing.events {
+        replies none
+      }
+  Reporting now reacts to 2 things
+  connect then disconnect is byte-identical: true
+  already connected: 0 edits, already-connected
+```
+
+The aliased reference, the file's indentation, a model that still checks out, and property 3 of section
+7.2 on real files.
+
+### 9.6 What is still not here
+
+**`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
+`views.json` atomically or it silently discards every saved position and lens entry naming the old name,
+and `moveToPackage` is the only mutation that can change a message's wire type.
+
+**An undo stack.** `invert` makes every operation invertible and costs nothing per operation, so this is a
+list and two buttons rather than a design problem — it is simply not written.
+
+**Adding a message or a record** from the composer, which is where it would belong.
+
+## 10. Increments
 
 Each one is useful on its own, and none is a prerequisite rewrite of the one before.
 
@@ -700,15 +787,16 @@ Each one is useful on its own, and none is a prerequisite rewrite of the one bef
    This absorbed the old "linked selection" increment, because linking three views turned out to be one
    `resolve` and no new machinery.
 4. **Composer, read-only** — build a message and watch it validated. **Done**, see section 7.
-5. **Mutation** — in two halves. **Saved layout is done**, see section 8: dragging persists to
-   `.7k/layout.json`, which is where the write path belongs first because a mistake there costs nothing.
-   **Model mutation** is not, and section 8.5 says what it needs.
+5. **Mutation** — both halves. **Saved layout**, see section 8: dragging persists to `.7k/layout.json`,
+   where the write path belongs first because a mistake there costs nothing. **Editing the model**, see
+   section 9: connect two things and the clause is written to the source. `rename` and `moveToPackage`
+   are the two operations deliberately still absent.
 
 Read-only first, and mutation last, because the authoring experience already exists in the extension
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
 
-## 10. Rendering
+## 11. Rendering
 
 **Cytoscape.js**, with layout from **ELK** through `cytoscape-elk` (D92).
 
@@ -727,7 +815,7 @@ rather than composing nodes from components:
   generated image rather than markup. Free for the first increment, which is boxes and labels, and
   not free later.
 
-## 11. Host
+## 12. Host
 
 A **local web app**, served by a command. The renderer goes in a package that knows nothing about its
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a

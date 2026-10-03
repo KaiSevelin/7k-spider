@@ -81,6 +81,72 @@ export async function collect(paths: readonly string[]): Promise<string[]> {
  * Merged across roots, first one winning a name clash, and absent is not an error: "deleting this file
  * loses saved lenses and nothing else" (`20-ir.md` 6.1).
  */
+/** What the page sends: for each file, the text it read and the text it wants written. */
+interface SourceWrite {
+  readonly files: Readonly<Record<string, { readonly before: string; readonly after: string }>>;
+}
+
+/**
+ * Writes edited sources, refusing if any of them changed underneath.
+ *
+ * **The page computes the mutation; the server owns the filesystem.** Core's mutation API lives in the
+ * page, which has the model, the trees and the sources, so the semantics of "what does adding an `emits`
+ * do" stay in one place (7k D98) and this stays a file writer.
+ *
+ * Which leaves one thing for the server to decide, and it is the one that matters: **whether the file is
+ * still the file the edit was computed against.** `20-ir.md` 7.1 says Spider holds no unsaved buffer and
+ * a watcher reloads on external change — so the conflict that remains is a file edited between the page
+ * reading it and the page writing it, and the honest answer to that is to refuse and let the reload
+ * happen.
+ *
+ * All or nothing: a mutation may touch several files, and half of a rename is worse than none of it.
+ */
+async function writeSources(
+  paths: readonly string[],
+  body: string,
+): Promise<{ ok: true; wrote: string[] } | { ok: false; problem: string }> {
+  let parsed: SourceWrite;
+  try {
+    parsed = JSON.parse(body) as SourceWrite;
+  } catch (cause) {
+    return { ok: false, problem: `not JSON: ${cause instanceof Error ? cause.message : ""}` };
+  }
+  if (typeof parsed.files !== "object" || parsed.files === null) {
+    return { ok: false, problem: "no files to write" };
+  }
+
+  const allowed = new Set(await collect(paths));
+  const entries = Object.entries(parsed.files);
+  if (entries.length === 0) return { ok: false, problem: "no files to write" };
+
+  // Checked before anything is written, so a refusal leaves the workspace exactly as it was.
+  for (const [file, { before, after }] of entries) {
+    const path = resolvePath(file);
+    if (!allowed.has(path)) {
+      // Only files this server is already serving: a write path that would touch anything else is a
+      // write path somebody will eventually point somewhere unfortunate.
+      return { ok: false, problem: `${file} is not part of this workspace` };
+    }
+    if (typeof before !== "string" || typeof after !== "string") {
+      return { ok: false, problem: `${file}: both the prior and the new text are needed` };
+    }
+    const disk = await readFile(path, "utf-8");
+    if (disk !== before) {
+      return {
+        ok: false,
+        problem: `${file} changed since it was read, so the edit was computed against something else`,
+      };
+    }
+  }
+
+  const wrote: string[] = [];
+  for (const [file, { after }] of entries) {
+    await writeFile(resolvePath(file), after, "utf-8");
+    wrote.push(file);
+  }
+  return { ok: true, wrote };
+}
+
 /**
  * Where a sidecar is written.
  *
@@ -264,6 +330,21 @@ export async function serve(options: ServeOptions): Promise<Serving> {
       const text = await readFile(tracePath, "utf-8");
       res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
       res.end(text);
+      return;
+    }
+
+    if (url.pathname === "/mutate" && req.method === "PUT") {
+      const outcome = await writeSources(paths, await read(req));
+      if (outcome.ok) {
+        // Our own write, so the watcher does not announce it: the page reloads itself, because it is
+        // the one that knows the edit succeeded.
+        wrote = Date.now();
+        res.writeHead(200, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ wrote: outcome.wrote }));
+      } else {
+        res.writeHead(409, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: outcome.problem }));
+      }
       return;
     }
 

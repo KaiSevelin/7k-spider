@@ -18,11 +18,18 @@
  */
 
 import {
+  applyAll,
   buildWorkspace,
+  connectEmit,
+  connectReact,
   hasErrors,
+  isPossible,
   lineColOf,
+  type CstNode,
   type Diagnostic,
+  type Editable,
   type LinkedModel,
+  type Mutation,
 } from "@sevenk/core";
 import { edgeForEvent, isBadEvent, buildGraph, type Graph, type GraphOptions } from "../graph.js";
 import {
@@ -47,6 +54,7 @@ import {
   type Forms,
 } from "../compose.js";
 import { renderForm } from "./compose-ui.js";
+import { candidates, pairFor, previewOf, roleOf, type Pair, type Preview } from "./connect-ui.js";
 import {
   parseLayout,
   viewOf,
@@ -82,6 +90,11 @@ const composePanel = el("compose");
 const composeWhat = el<HTMLSelectElement>("composeWhat");
 const composeState = el("composeState");
 const composeOut = el<HTMLPreElement>("composeOut");
+const propose = el("propose");
+const proposeWhat = el("proposeWhat");
+const proposeBody = el("proposeBody");
+const proposeState = el("proposeState");
+const proposeApply = el<HTMLButtonElement>("proposeApply");
 const lensPicker = el<HTMLSelectElement>("lens");
 const focusChip = el("focus");
 const focusName = el("focusName");
@@ -112,6 +125,12 @@ let sourceOf = new Map<string, string>();
 let announcedErrors = false;
 /** Kept so a problem found later — a failed layout write — can be reported beside the rest. */
 let lastDiagnostics: readonly Diagnostic[] = [];
+/** The sources as read, and the trees they parsed to: what a mutation is computed against. */
+let sources: Readonly<Record<string, string>> = {};
+let trees: ReadonlyMap<string, CstNode> = new Map();
+/** Where a connection is being made from, while one is. */
+let connectingFrom: SelectionId | undefined;
+let proposal: Preview | undefined;
 /** The trace, if one was given. Optional by design: the graph is worth drawing before anything has run. */
 /** Every run the file holds. A file routinely holds several, and they cannot be played as one. */
 let runs: readonly Run[] = [];
@@ -298,6 +317,20 @@ function describe(id: SelectionId | undefined): void {
 }
 
 function select(id: SelectionId | undefined): void {
+  // While a connection is being made, a click is the gesture rather than a selection.
+  if (connecting() && id !== undefined && graph !== undefined) {
+    const node = nodeFor(graph, id);
+    if (node !== undefined && roleOf(node) !== undefined) {
+      if (connectingFrom === undefined) {
+        connectingFrom = id;
+        status.textContent = `from ${node.label} — now click the other end`;
+        return;
+      }
+      proposeConnection(id);
+      return;
+    }
+  }
+
   // A port is not a declaration, so it cannot be a `declaration` selection — but it is worth opening
   // the sidebar for, because what it hides is the only thing it has to say.
   selection = id === undefined || isPort(id) ? { k: "none" } : { k: "declaration", id };
@@ -558,6 +591,169 @@ function toggleCompose(force?: boolean): void {
   }
 }
 
+// ---- connecting ------------------------------------------------------------
+
+const editable = (): Editable | undefined =>
+  model === undefined ? undefined : { model, trees, sources };
+
+function armConnect(on?: boolean): void {
+  const armed = on ?? connectingFrom === undefined;
+  connectingFrom = undefined;
+  document.body.classList.toggle("connecting", armed);
+  el("connect").classList.toggle("armed", armed);
+  if (armed) {
+    status.textContent = "click a service, then a pipe — or a pipe, then a service";
+  } else {
+    redraw();
+  }
+}
+
+const connecting = (): boolean => document.body.classList.contains("connecting");
+
+/** The second click: works out the direction, then asks which message. */
+function proposeConnection(to: SelectionId): void {
+  if (graph === undefined || connectingFrom === undefined) return;
+  const answer = pairFor(graph, connectingFrom, to);
+  if ("problem" in answer) {
+    // Said rather than shrugged at: two services is the thing a reader is most likely to try.
+    status.textContent = answer.problem;
+    status.classList.add("bad");
+    connectingFrom = undefined;
+    return;
+  }
+  status.classList.remove("bad");
+  askWhichMessage(answer.pair);
+}
+
+function askWhichMessage(pair: Pair): void {
+  if (graph === undefined) return;
+  armConnect(false);
+
+  const service = nodeFor(graph, pair.service)?.label ?? pair.service;
+  const pipe = nodeFor(graph, pair.pipe)?.label ?? pair.pipe;
+  proposeWhat.textContent =
+    pair.direction === "emits" ? `${service} emits … to ${pipe}` : `${service} reacts … from ${pipe}`;
+
+  const list = document.createElement("ul");
+  for (const option of candidates(graph, pair)) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = option.label;
+    if (option.onPipe) {
+      const mark = document.createElement("span");
+      mark.className = "onPipe";
+      mark.textContent = "already on this pipe";
+      button.append(mark);
+    }
+    button.addEventListener("click", () => buildProposal(pair, option.label));
+    li.append(button);
+    list.append(li);
+  }
+
+  const heading = document.createElement("div");
+  heading.className = "where";
+  heading.textContent = "which message?";
+  proposeBody.replaceChildren(heading, list);
+  proposeState.textContent = "";
+  proposeApply.hidden = true;
+  propose.hidden = false;
+}
+
+/** The preview. Nothing is written until this is accepted (`20-ir.md` 7). */
+function buildProposal(pair: Pair, message: string): void {
+  const where = editable();
+  if (where === undefined || graph === undefined) return;
+
+  const service = nodeFor(graph, pair.service)?.qname ?? pair.service;
+  const pipe = nodeFor(graph, pair.pipe)?.qname ?? pair.pipe;
+  const what = { service, message, pipe };
+  const mutation: Mutation =
+    pair.direction === "emits" ? connectEmit(where, what) : connectReact(where, what);
+
+  proposeWhat.textContent = mutation.describe;
+
+  if (mutation.edits.length === 0) {
+    proposeBody.replaceChildren();
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = mutation.diagnostics.map((d) => d.message).join("\n") || "nothing to do";
+    proposeBody.append(why);
+    proposeState.textContent = "";
+    proposeApply.hidden = true;
+    proposal = undefined;
+    return;
+  }
+
+  const applied = applyAll(sources, mutation.edits);
+  proposal = previewOf(mutation, sources, applied);
+
+  proposeBody.replaceChildren();
+  for (const show of proposal.shows) {
+    const where2 = document.createElement("div");
+    where2.className = "where";
+    where2.textContent = `${show.removing ? "removing from" : "adding to"} ${show.file.replace(/\\/g, "/").split("/").pop() ?? show.file}`;
+    const pre = document.createElement("pre");
+    if (show.removing) pre.classList.add("removing");
+    pre.textContent = show.text;
+    proposeBody.append(where2, pre);
+  }
+
+  // A diagnostic that is not an error does not stop the write; it is said anyway, because an edit that
+  // needs an import is still an edit somebody should know about.
+  const errors = mutation.diagnostics.filter((d) => d.severity === "error");
+  if (mutation.diagnostics.length > 0) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = mutation.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n");
+    proposeBody.append(why);
+  }
+
+  proposeState.textContent = isPossible(mutation) ? "" : "this cannot be written as it stands";
+  proposeState.classList.toggle("bad", errors.length > 0);
+  proposeApply.hidden = false;
+  proposeApply.disabled = errors.length > 0;
+  propose.hidden = false;
+}
+
+function closeProposal(): void {
+  propose.hidden = true;
+  proposal = undefined;
+  connectingFrom = undefined;
+}
+
+/**
+ * Writes it.
+ *
+ * The server refuses if a file changed since it was read, which is the only conflict left once Spider
+ * holds no unsaved buffer (`20-ir.md` 7.1). A refusal is reported and the page reloads, so what is on
+ * screen is what is on disk.
+ */
+async function applyProposal(): Promise<void> {
+  if (proposal === undefined) return;
+  const sending = proposal;
+  closeProposal();
+
+  try {
+    const response = await fetch("/mutate", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: sending.files }),
+    });
+    if (!response.ok) {
+      const body = (await response.json()) as { problem?: string };
+      layoutProblems = [body.problem ?? `could not write: ${response.status}`];
+    } else {
+      layoutProblems = [];
+    }
+  } catch (cause) {
+    layoutProblems = [`could not write: ${cause instanceof Error ? cause.message : ""}`];
+  }
+
+  // Either way: what is on screen should be what is on disk.
+  await load();
+}
+
 // ---- search ----------------------------------------------------------------
 
 const KIND_LABEL: Readonly<Record<string, string>> = {
@@ -795,9 +991,15 @@ function redraw(): void {
   if (selection.k === "declaration") select(selection.id);
 }
 
-function draw(sources: Sources): void {
-  sourceOf = new Map(sources.files.map((f) => [f.path, f.source]));
-  const ws = buildWorkspace(sources.files.map((f) => ({ path: f.path, source: f.source })));
+function draw(read: Sources): void {
+  sourceOf = new Map(read.files.map((f) => [f.path, f.source]));
+  // The text a mutation is computed against. Named distinctly from the parameter, because shadowing it
+  // left `sources` empty and every mutation would have been computed against nothing.
+  sources = Object.fromEntries(read.files.map((f) => [f.path, f.source]));
+  // Kept as the mutation API wants them: the text a mutation is computed against, and the trees it finds
+  // its insertion points in.
+  const ws = buildWorkspace(read.files.map((f) => ({ path: f.path, source: f.source })));
+  trees = ws.trees;
   model = ws.model;
   index = buildIndex(ws.model);
   whole = buildGraph(ws.model, optionsFromForm());
@@ -905,6 +1107,9 @@ paletteInput.addEventListener("keydown", (e) => {
 
 el("toggleSequence").addEventListener("click", () => toggleSequence());
 el("toggleCompose").addEventListener("click", () => toggleCompose());
+el("connect").addEventListener("click", () => armConnect());
+el("proposeClose").addEventListener("click", closeProposal);
+proposeApply.addEventListener("click", () => void applyProposal());
 el("composeClose").addEventListener("click", () => toggleCompose(false));
 composeWhat.addEventListener("change", startComposing);
 el("run").addEventListener("change", () => selectRun());
@@ -958,6 +1163,16 @@ document.addEventListener("keydown", (e) => {
   // Escape undoes the most recent narrowing first: the focus, then the selection. A single key that
   // cleared both would make it impossible to keep a focus while looking at something inside it.
   if (e.key === "Escape") {
+    // The most recent thing first, as everywhere else: a proposal, then a half-made connection, then the
+    // focus, then the selection.
+    if (!propose.hidden) {
+      closeProposal();
+      return;
+    }
+    if (connecting()) {
+      armConnect(false);
+      return;
+    }
     if (isFocused(focus)) toggleFocus();
     else select(undefined);
     return;
@@ -965,6 +1180,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "f" || e.key === "F") toggleFocus();
   if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
   if (e.key === "c" || e.key === "C") toggleCompose();
+  if (e.key === "n" || e.key === "N") armConnect();
   if (e.key === " ") {
     player?.toggle();
     e.preventDefault();
