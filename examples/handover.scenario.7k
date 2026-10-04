@@ -19,6 +19,11 @@ mockset Working {
     } after 200ms
     on ReleaseCompartment reply CompartmentReleased after 200ms
   }
+  // Faster than the locker on purpose: the branch declared second finishes first, so the trace
+  // shows a stage joining out of declaration order.
+  mock notify.NotifyService {
+    on notify.VerifyRecipient reply notify.RecipientVerified after 100ms
+  }
   mock SweepService {
     on SweepExpired reply SweepFinished { returned: 3 } after 2s
   }
@@ -96,6 +101,11 @@ scenario LockerFull {
   mock CompartmentService {
     on ReserveCompartment reply CompartmentFull { locker: "STO-114" } after 200ms
   }
+  // Answers later than the locker refuses, so the rejection arrives while this branch is still
+  // waiting — and its 30s timeout must never fire, because the saga is already over.
+  mock notify.NotifyService {
+    on notify.VerifyRecipient reply notify.RecipientVerified after 5s
+  }
 
   at 0s publish DropParcel as CourierApp
     with claims   { sub: "courier-71", scope: "parcels.drop" }
@@ -147,6 +157,9 @@ scenario LockerNeverAnswers {
   mock CompartmentService {
     on ReserveCompartment hang
   }
+  mock notify.NotifyService {
+    on notify.VerifyRecipient reply notify.RecipientVerified after 100ms
+  }
 
   at 0s publish DropParcel as CourierApp
     with claims   { sub: "courier-71", scope: "parcels.drop" }
@@ -174,4 +187,40 @@ scenario SweepRunsEachNight {
   advance 72h
   expect SweepExpired  on commands count 3
   expect SweepFinished on events   count 3
+}
+
+// ---------------------------------------------------------------------------
+// 7. The compartment is held, and then the recipient turns out to be unreachable.
+//    The branch that succeeded is unwound — which only a stage can arrange, and
+//    which is the run the saga view was written to make legible.
+// ---------------------------------------------------------------------------
+
+scenario RecipientUnreachable {
+  seed 7
+  use  Working
+
+  mock notify.NotifyService {
+    on notify.VerifyRecipient reply notify.RecipientUnreachable {
+      detail: "the number is not in service"
+    } after 400ms
+  }
+
+  at 0s publish DropParcel as CourierApp
+    with claims   { sub: "courier-71", scope: "parcels.drop" }
+    with envelope { operatorId: "nordic-lockers", actor: "courier-71" }
+    {
+      parcelRef: "PCL-80417",
+      locker:    "STO-114",
+      size:      "Small",
+      recipient: { name: "Frida Berg", phone: "+46700000004" }
+    }
+
+  advance 1s
+
+  // `reserve` completed at 200ms; `verify` rejected at 400ms. So the compartment goes back, and
+  // nobody is ever told a code.
+  expect ReleaseCompartment on commands
+  expect no notify.NotifyRecipient on notify.commands
+  expect saga Handover["PCL-80417"].state == reject
+  expect HandoverFinished on events
 }

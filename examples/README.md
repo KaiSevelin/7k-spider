@@ -1,9 +1,10 @@
 # A parcel locker network
 
 Spider's example workspace. Four packages, a boundary, personal data that propagates, a lossy pipe, a
-saga with a three-day wait, and a nightly schedule across a daylight-saving change.
+saga with a parallel stage and a three-day wait, and a nightly schedule across a daylight-saving
+change.
 
-It exists to be looked at, so it deliberately contains the things the three views have something to say
+It exists to be looked at, so it deliberately contains the things the views have something to say
 about.
 
 ## Running it
@@ -34,8 +35,9 @@ npm run serve examples
 | | |
 |---|---|
 | **Press `Space`** | the trace plays. Messages move along the edges; a failure is a different colour |
-| **Pick a run** | the footer's first dropdown. Six scenarios, one run each. Try `NobodyCollects` |
+| **Pick a run** | the footer's first dropdown. Seven scenarios, one run each. Try `NobodyCollects` |
 | **Press `s`** | the sequence diagram. Pipes are lifelines, so the waiting is visible |
+| **Press `g`** | the saga view. `reserve` and `verify` sit side by side, because they share a stage |
 | **Pick a lens** | `PiiFlow` shows where personal data goes; `Perimeter` shows where the system ends |
 | **Press `f`** on a selection | focus: only that and what it touches, two hops out |
 | **Press `Ctrl-K`** | find anything. Try `pipes`, or `ordsvc`-style abbreviations |
@@ -45,15 +47,28 @@ npm run serve examples
 
 ### The runs worth watching
 
-**`HandoverSucceeds`** — the whole path in 31 virtual seconds: dropped, a compartment reserved, the
-recipient notified, collected.
+**`HandoverSucceeds`** — the whole path in 31 virtual seconds: dropped, a compartment reserved while
+the recipient is verified, then notified and collected. Press `g` while it plays: the two branches of
+the first stage fill in **`verify` first**, because the address book answers in 100ms and the locker
+takes 200ms. They were sent at the same instant.
 
 **`NobodyCollects`** — three virtual days of nothing, then the step times out, the saga rejects, and the
-`reserve` step's **undo** releases the compartment. The timeline draws that gap at its real size while
-playback crosses it in one beat.
+stage is unwound: `ReleaseCompartment` goes out for `reserve`, and `verify` is skipped because it
+declared `undo none`. The order is **reverse completion**, so `reserve` is reversed before `verify`
+even though it was declared first — the two branches finished in the other order, and there is no
+order to reverse but the one that happened. The timeline draws that three-day gap at its real size
+while playback crosses it in one beat.
+
+**`RecipientUnreachable`** — the compartment is held, and *then* the recipient turns out to be
+unreachable. The saga rejects and releases a compartment it had already reserved, which a sequence
+could never have arranged: in a sequence the verification would have failed first and nothing would
+have been held. This is the run the parallel stage exists to make possible, and the one the saga view
+makes legible.
 
 **`LockerNeverAnswers`** — the compartment service never replies, so the step's own timeout fires. A
-different thing from the saga's week-long deadline, and the sequence diagram shows which.
+different thing from the saga's week-long deadline, and the sequence diagram shows which. Its sibling
+had already succeeded, so unwinding it records `saga-irreversible`: `undo none` is a decision, and the
+trace says it was taken.
 
 **`SweepRunsEachNight`** — the schedule firing three nights running, with `+24.0h` between occurrences.
 
@@ -115,6 +130,12 @@ Worth recording, because it is the argument for the sandbox existing.
 
 The model checked out — 0 errors — and was still wrong in three ways, each of which only running it
 revealed:
+
+- **Two steps that did not have to wait for each other.** `reserve` and `verify` were a sequence,
+  which meant every parcel waited for the address book before the locker was even asked — a delay
+  with no cause anywhere in the model. They became a `parallel` stage. `handover` could not join them:
+  it reads the pin that `reserve` produced, which is the test for whether two steps belong in one
+  stage at all.
 
 - **A step that awaited nothing.** The `tell` step sent a notification and then had only a timeout, so
   its sole possible outcome was its own expiry. Every run ended `reject: could not notify`. Telling the

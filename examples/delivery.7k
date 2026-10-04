@@ -161,6 +161,7 @@ service DeliveryService {
   emits ReserveCompartment to commands
   emits ReleaseCompartment to commands
   emits notify.NotifyRecipient to notify.commands
+  emits notify.VerifyRecipient to notify.commands
 
   reacts DropParcel from inbound {
     // A claim check that means something here: `inbound` is where an `@external` courier publishes,
@@ -178,6 +179,9 @@ service DeliveryService {
   reacts CompartmentFull      from events { replies none }
   reacts CompartmentReleased  from events { replies none }
   reacts ParcelCollected      from events { replies none }
+
+  reacts notify.RecipientVerified    from notify.events { replies none }
+  reacts notify.RecipientUnreachable from notify.events { replies none }
 }
 
 // Owns the compartments. Separate from DeliveryService because a locker is a scarce resource and
@@ -257,21 +261,45 @@ saga Handover v1.0 {
     pin:         common.PinCode
   }
 
-  step reserve {
-    send ReserveCompartment
+  // Two preconditions for handing out a collection code, and neither depends on the other: a
+  // compartment held at the locker, and a recipient who can be told the code. Running them in
+  // sequence would delay every parcel by the slower of the two for no reason the model could point
+  // at, so they share a stage (`04-process.md` 1.3).
+  //
+  // The stage is where compensation gets interesting. If the recipient turns out to be unreachable
+  // after the compartment was reserved, the saga rejects and `reserve` — a sibling that had already
+  // completed — is unwound. That is the run `RecipientUnreachable` in the scenarios exists for.
+  parallel {
+    step reserve {
+      send ReserveCompartment
 
-    on CompartmentReserved { compartment = message.compartment; pin = message.pin }
-    on CompartmentFull     reject "no compartment of that size"
-    on timeout 30s         reject "the locker did not answer"
+      on CompartmentReserved { compartment = message.compartment; pin = message.pin }
+      on CompartmentFull     reject "no compartment of that size"
+      on timeout 30s         reject "the locker did not answer"
 
-    // Co-located with the step it reverses, and run only if this step completed. The inverse needs
-    // the compartment, which only the saga holds — recorded by the action above.
-    undo with ReleaseCompartment { compartment = state.compartment }
+      // Co-located with the step it reverses, and run only if this step completed. The inverse needs
+      // the compartment, which only the saga holds — recorded by the action above.
+      undo with ReleaseCompartment { compartment = state.compartment }
+    }
+
+    step verify {
+      send notify.VerifyRecipient { recipient = state.recipient }
+
+      // Records nothing. The branch is a precondition, and what it would have to record — a phone
+      // number — belongs to the package that already has it.
+      on notify.RecipientVerified
+      on notify.RecipientUnreachable reject "the recipient cannot be told the code"
+      on timeout 30s                 reject "the address book did not answer"
+
+      // A question that was answered has nothing to take back.
+      undo none
+    }
   }
 
-  // Telling the recipient and waiting for them is one step, not two. A step that sent a notification
-  // and then awaited nothing could only ever end in its own timeout, which the sandbox pointed out by
-  // ending every run that way.
+  // Not in the stage above: this one reads the pin that `reserve` produced, so it has to follow it.
+  // Telling the recipient and waiting for them is then one step, not two — a step that sent a
+  // notification and then awaited nothing could only ever end in its own timeout, which the sandbox
+  // pointed out by ending every run that way.
   step handover {
     send notify.NotifyRecipient { recipient = state.recipient; pin = state.pin; locker = state.locker }
 

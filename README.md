@@ -37,7 +37,7 @@ It watches the files, so editing a `.7k` redraws the page — and because the la
 the parts you did not change stay where they were.
 
 ```
-npm test        # 307 tests
+npm test        # 312 tests
 npm run build
 ```
 

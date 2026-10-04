@@ -87,6 +87,15 @@ export function renderSaga(
   const selectable = (node: SVGElement, id: SelectionId): void => {
     byId.set(id, [...(byId.get(id) ?? []), node]);
     node.setAttribute("data-id", id);
+
+    // The qualified name on hover, because a card shows the bare one and two packages may each
+    // declare a `Reserved`. A saga that drives another package — which is most of them — otherwise
+    // gives a reader no way to tell which `VerifyRecipient` it means.
+    if (node.querySelector("title") === null) {
+      const title = el("title");
+      title.textContent = id.slice(id.indexOf(":") + 1);
+      node.append(title);
+    }
     const onSelect = options.onSelect;
     if (onSelect === undefined) return;
     node.classList.add("clickable");

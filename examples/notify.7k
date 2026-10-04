@@ -21,6 +21,26 @@ message NotifyRecipient v1.0 @command {
   locker:    common.LockerId
 }
 
+// Asked by the delivery saga, at the same time as it reserves a compartment. The two are
+// independent — a locker knows nothing about a phone number — which is what makes them a stage
+// rather than a sequence.
+message VerifyRecipient v1.0 @command {
+  parcelRef: common.ParcelRef @role(businessKey)
+  recipient: common.Recipient
+}
+
+// Reachable. Carries nothing but the key: *how* the recipient is told is this package's business, and
+// a delivery saga that learned the phone number would spread personal data into a package that has no
+// use for it.
+message RecipientVerified v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+}
+
+message RecipientUnreachable v1.0 @event {
+  parcelRef: common.ParcelRef @role(businessKey)
+  detail:    string { length 1..200 }
+}
+
 message SendSms v1.0 @command {
   parcelRef: common.ParcelRef @role(businessKey)
   phone:     common.PhoneNumber
@@ -40,7 +60,7 @@ message SmsRejected v1.0 @event {
 
 pipe commands : queue {
   ordering by operatorId
-  carries   NotifyRecipient, SendSms
+  carries   NotifyRecipient, VerifyRecipient, SendSms
 }
 
 pipe events : topic {
@@ -53,11 +73,20 @@ pipe events : topic {
 // Composes the message a person reads. Its own service because the wording is a decision, and
 // because it is the only thing that needs to see both the code and the phone number.
 service NotifyService {
-  emits SendSms to commands
+  emits SendSms              to commands
+  emits RecipientVerified    to events
+  emits RecipientUnreachable to events
 
   reacts NotifyRecipient from commands {
     once per parcelRef
     replies none
+  }
+
+  // The only thing that needs to see the phone number is the only thing that can say whether it is
+  // any good.
+  reacts VerifyRecipient from commands {
+    once per parcelRef
+    replies RecipientVerified | RecipientUnreachable
   }
 }
 

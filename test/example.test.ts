@@ -138,6 +138,34 @@ describe("it contains what it says it contains", () => {
     expect(schedule.kind).toBe("schedule");
   });
 
+  it("a parallel stage whose branches have nothing to say to each other", () => {
+    const m = model();
+    const saga = named(m, "Handover");
+    if (saga.kind !== "saga") throw new Error("not a saga");
+
+    // Two steps in one stage, and a third in the next. `handover` reads the pin that `reserve`
+    // produced, which is why it cannot join them.
+    const stages = new Map<number, string[]>();
+    for (const step of saga.steps) {
+      stages.set(step.stage, [...(stages.get(step.stage) ?? []), step.name]);
+    }
+    expect([...stages.entries()].sort((a, b) => a[0] - b[0])).toEqual([
+      [0, ["reserve", "verify"]],
+      [1, ["handover"]],
+    ]);
+
+    // And what makes them legal to run at once: neither writes what the other writes, and neither
+    // waits for what the other waits for. Core reports both as errors, so this is really asserting
+    // that the example would not check out if it drifted.
+    const branches = saga.steps.filter((x) => x.stage === 0);
+    const written = branches.flatMap((x) =>
+      x.awaits.flatMap((a) => (a.action.a === "continue" ? a.action.assigns.map((g) => g.target.join(".")) : [])),
+    );
+    expect(new Set(written).size).toBe(written.length);
+    const awaited = branches.flatMap((x) => x.awaits.map((a) => a.message.text));
+    expect(new Set(awaited).size).toBe(awaited.length);
+  });
+
   it("a query, which carries no deduplication key", () => {
     // "Where is my parcel?", asked by a recipient refreshing a page — so asked twice, by a caller with
     // nothing of their own to deduplicate on. As a command the second refresh would be absorbed and
@@ -286,6 +314,47 @@ describe("the trace that ships with it", () => {
     expect(missing.map((e) => `${e.run}#${e.seq} ${e.kind}`)).toEqual([]);
   });
 
+  it("shows a stage joining out of declaration order", () => {
+    // The thing a sequence cannot do. `verify` is declared second and answers first, because its
+    // mock is faster than the locker — so the trace is evidence the branches really ran at once
+    // rather than one after the other.
+    const m = model();
+    const saga = sagasOf(m)[0]!;
+    const p = progressOf(saga, trace(), "PCL-80412");
+    expect(p?.completed.slice(0, 2)).toEqual(["verify", "reserve"]);
+    expect(saga.steps.map((x) => x.name).slice(0, 2)).toEqual(["reserve", "verify"]);
+  });
+
+  it("shows a parallel sibling being compensated", () => {
+    // `reserve` held a compartment; `verify` then found the recipient unreachable and rejected. A
+    // sequence could not produce this: the compartment would never have been reserved.
+    const saga = sagasOf(model())[0]!;
+    const p = progressOf(saga, trace(), "PCL-80417");
+    expect(p?.endedIn).toBe("verify");
+    expect(p?.completed).toEqual(["reserve"]);
+    expect(p?.compensated).toEqual(["reserve"]);
+  });
+
+  it("unwinds a stage in reverse completion order, which differs from reverse declaration order", () => {
+    // Both branches completed — `verify` first — and then `handover` timed out. Reverse completion
+    // order is `reserve`, `verify`; reverse *declaration* order would be the other way round. This
+    // is the one run in which the two rules disagree, which is why it is asserted.
+    const saga = sagasOf(model())[0]!;
+    const p = progressOf(saga, trace(), "PCL-80413");
+    expect(p?.completed).toEqual(["verify", "reserve"]);
+    expect(p?.compensated).toEqual(["reserve", "verify"]);
+  });
+
+  it("stops a sibling's clock when a branch ends the saga", () => {
+    // `LockerFull` refuses at 200ms while `verify` is still waiting on a mock that answers at 5s.
+    // Its 30s timeout was armed when the stage was entered and must never fire — a timeout recorded
+    // after the terminal would be a phantom.
+    const events = trace().filter((e) => e.sagaKey === "PCL-80414");
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.filter((e) => e.kind === "saga-timeout")).toEqual([]);
+    expect(events.at(-1)?.kind).toBe("saga-rejected");
+  });
+
   it("holds one run per scenario", () => {
     expect(runsOf(trace()).map((r) => r.run.replace(/#.*/, "")).sort()).toEqual([
       "DropWithoutScope",
@@ -293,6 +362,7 @@ describe("the trace that ships with it", () => {
       "LockerFull",
       "LockerNeverAnswers",
       "NobodyCollects",
+      "RecipientUnreachable",
       "SweepRunsEachNight",
     ]);
   });
