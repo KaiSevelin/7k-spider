@@ -24,6 +24,7 @@ import { buildGraph } from "../src/graph.js";
 import { parseViews, resolveLens } from "../src/lens.js";
 import { runsOf } from "../src/play.js";
 import { edgeForEvent } from "../src/graph.js";
+import { progressOf, sagasOf } from "../src/saga.js";
 
 const EXAMPLES = join(import.meta.dirname, "..", "examples");
 
@@ -239,6 +240,50 @@ describe("the trace that ships with it", () => {
 
   it("is valid by every rule section 7 states", () => {
     expect(validateTrace(trace()).map((p) => p.message)).toEqual([]);
+  });
+
+  /**
+   * The invariant that caught a real bug: **everything compensated must have completed**.
+   *
+   * `undo` runs for a step that completed and must not run for one that did not
+   * (`04-process.md` 1.4), so over a real trace the two sets have to nest. They did not, when
+   * `progressOf` read `saga-advanced` as success — the example's own trace had an instance that
+   * rejected inside `reserve`, which looked like a completed step with no compensation.
+   *
+   * Asserted over every instance the trace holds rather than a chosen one, because the four runs
+   * between them cover completion, a rejecting reply, a timeout in the first step and a timeout in
+   * the second.
+   */
+  it("agrees with itself about which steps completed", () => {
+    const events = trace();
+    const m = model();
+    const saga = sagasOf(m)[0];
+    expect(saga).toBeDefined();
+
+    const keys = [...new Set(events.filter((e) => e.sagaKey !== undefined).map((e) => e.sagaKey!))];
+    expect(keys.length).toBeGreaterThan(3);
+
+    for (const key of keys) {
+      const p = progressOf(saga!, events, key);
+      expect(p, key).toBeDefined();
+      for (const name of p!.compensated) {
+        expect(p!.completed, `${key}: compensated \`${name}\` without completing it`).toContain(name);
+      }
+      // And the step an instance ended in is never one it completed.
+      if (p!.endedIn !== undefined) expect(p!.completed).not.toContain(p!.endedIn);
+    }
+  });
+
+  it("names a step on every saga event that concerns one", () => {
+    // `step` is data; the step name must not have to be parsed out of `detail`.
+    const needing = new Set([
+      "saga-advanced",
+      "saga-timeout",
+      "saga-compensating",
+      "saga-irreversible",
+    ]);
+    const missing = trace().filter((e) => needing.has(e.kind) && e.step === undefined);
+    expect(missing.map((e) => `${e.run}#${e.seq} ${e.kind}`)).toEqual([]);
   });
 
   it("holds one run per scenario", () => {

@@ -420,6 +420,7 @@
       /* Out of the drawer's way, since both live on the right. */
       body.sequence-open #sidebar { right: calc(min(620px, 62%) + 12px); }
       body.compose-open #sidebar { right: calc(min(520px, 58%) + 12px); }
+      body.saga-open #sidebar { right: calc(min(560px, 60%) + 12px); }
       #sidebar h2 { font-size: 13px; margin: 0 0 8px; word-break: break-all; }
       #sidebar dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
       #sidebar dt { color: var(--ink-dim); }
@@ -542,6 +543,69 @@
       @media (max-width: 640px) {
         #sidebar { position: static; width: auto; margin: 12px; }
       }
+
+      /* The saga drawer. Same edge and width rules as the sequence: one drawer at a time, and the
+         graph underneath is never re-laid out. */
+      #saga {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(560px, 60vw);
+        overflow: auto;
+        background: var(--surface);
+        border-left: 1px solid var(--line);
+        z-index: 4;
+      }
+      #saga[hidden] { display: none; }
+      #sagaCanvas { padding: 8px 10px 16px; }
+      #sagaState { color: var(--ink-dim); font: 11px var(--mono); }
+
+      .saga { display: block; }
+      .saga text { font: 11px var(--mono); fill: var(--ink); }
+
+      .saga .spine { stroke: var(--line); stroke-width: 2; }
+      .saga .stub { stroke: var(--line); stroke-width: 1.2; }
+      .saga .bracket { stroke: var(--pipe-line); stroke-width: 2; fill: none; }
+
+      .saga .band-box { fill: var(--package); stroke: var(--line); }
+      .saga .band-title { font-weight: 600; }
+      .saga .band-note { fill: var(--ink-dim); }
+
+      .saga .card-box { fill: var(--surface); stroke: var(--line); }
+      .saga .card-name { font-weight: 600; }
+      .saga .send { fill: var(--ink); }
+      .saga .row-label { fill: var(--ink); }
+      .saga .glyph { fill: var(--ink-dim); }
+      .saga .outcome-reject .glyph, .saga .outcome-abandon .glyph { fill: var(--warn); }
+
+      /* The silences read as absences, not as declarations. */
+      .saga .silence, .saga .undo-absent { fill: var(--warn); font-style: italic; }
+      .saga .undo { fill: var(--ink-dim); }
+      .saga .undo-none { font-style: italic; }
+
+      .saga .stage-index { fill: var(--ink-dim); font-weight: 600; }
+      .saga .stage-word { fill: var(--pipe-line); font-size: 10px; }
+
+      .saga .rail { stroke: var(--warn); stroke-width: 1.2; stroke-dasharray: 2 3; }
+      .saga .rail-stub { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 2 3; }
+
+      .saga .terminal-label { fill: var(--ink); }
+      .saga .terminal-silent { fill: var(--warn); font-style: italic; }
+
+      .saga .clickable { cursor: pointer; }
+      .saga .clickable:hover { text-decoration: underline; }
+      .saga .emphasised { font-weight: 700; }
+      .saga .dimmed { opacity: 0.38; }
+
+      /* One instance's progress, drawn over the declaration. Only visible with a trace loaded, so the
+         declaration is never dressed up as a run that did not happen. */
+      .saga .card.completed .card-box { fill: var(--service); stroke: var(--service-line); }
+      .saga .card.waiting .card-box { stroke: var(--pipe-line); stroke-width: 2.4; }
+      .saga .card.timed-out .card-box { stroke: var(--warn); stroke-width: 2.4; }
+      .saga .card.compensated .undo { fill: var(--warn); font-weight: 700; }
+      .saga .terminal.reached .terminal-label,
+      .saga .terminal.reached .terminal-silent { font-weight: 700; text-decoration: underline; }
     </style>
   </head>
   <body>
@@ -551,6 +615,9 @@
       <button type="button" id="problemsCount" title="what the checker says"></button>
       <button type="button" id="toggleSequence" title="the sequence diagram (s)" hidden>
         sequence
+      </button>
+      <button type="button" id="toggleSaga" title="the saga being declared (g)" hidden>
+        saga
       </button>
       <button type="button" id="toggleCompose" title="build a message (c)">compose</button>
       <button type="button" id="connect" title="connect two things (n)">connect&hellip;</button>
@@ -581,6 +648,14 @@
         <ul id="paletteList"></ul>
       </div>
       <aside id="sequence" hidden></aside>
+      <aside id="saga" hidden>
+        <header class="panelHead">
+          <select id="sagaWhich" title="which saga"></select>
+          <span id="sagaState"></span>
+          <button type="button" id="sagaClose" title="close">&times;</button>
+        </header>
+        <div id="sagaCanvas"></div>
+      </aside>
       <aside id="compose" hidden>
         <header class="panelHead">
           <select id="composeWhat" title="what to build"></select>

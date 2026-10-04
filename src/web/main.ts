@@ -25,11 +25,13 @@ import {
   hasErrors,
   isPossible,
   lineColOf,
+  qualify,
   type CstNode,
   type Diagnostic,
   type Editable,
   type LinkedModel,
   type Mutation,
+  type SagaIr,
 } from "@sevenk/core";
 import { edgeForEvent, isBadEvent, buildGraph, type Graph, type GraphOptions } from "../graph.js";
 import {
@@ -44,6 +46,8 @@ import { nodeFor, renderGraph, type Rendered } from "../render.js";
 import { createPlayer, positions, runsOf, type Player, type Run } from "../play.js";
 import { buildIndex, search, type Entry, type Hit } from "../search.js";
 import { renderSequence, type SequenceView } from "../sequence-view.js";
+import { progressOf, sagaById, sagasOf } from "../saga.js";
+import { renderSaga, type SagaView } from "../saga-view.js";
 import {
   blank,
   check,
@@ -86,6 +90,10 @@ const track = el("track");
 const playhead = el("playhead");
 const position = el("position");
 const sequencePanel = el("sequence");
+const sagaPanel = el("saga");
+const sagaCanvas = el("sagaCanvas");
+const sagaWhich = el<HTMLSelectElement>("sagaWhich");
+const sagaState = el("sagaState");
 const composePanel = el("compose");
 const composeWhat = el<HTMLSelectElement>("composeWhat");
 const composeState = el("composeState");
@@ -138,6 +146,9 @@ let runs: readonly Run[] = [];
 let trace: readonly TraceEvent[] = [];
 let player: Player | undefined;
 let sequence: SequenceView | undefined;
+let sagaView: SagaView | undefined;
+/** The saga the drawer is showing. The drawer draws one at a time; the picker chooses which. */
+let openSaga: SagaIr | undefined;
 let layout: Layout = {};
 let layoutProblems: readonly string[] = [];
 let forms: Forms = {};
@@ -336,6 +347,14 @@ function select(id: SelectionId | undefined): void {
   selection = id === undefined || isPort(id) ? { k: "none" } : { k: "declaration", id };
   applyHighlight();
   describe(id);
+
+  // A saga is the one declaration with a picture of its own, and nothing in the graph draws it — so
+  // selecting one opens the view that does. This is the only way most people will find it.
+  const asSaga = model === undefined || id === undefined ? undefined : sagaById(model, id);
+  if (asSaga !== undefined) {
+    showSaga(asSaga);
+    toggleSaga(true);
+  }
 }
 
 /** Focuses on one node. A port stands for what is already out of view, so it is not a thing to focus. */
@@ -386,6 +405,120 @@ function drawTrack(): void {
   playhead.hidden = shown < 0;
 }
 
+
+// ---- the saga view ---------------------------------------------------------
+
+/**
+ * Fills the saga picker, and hides the whole affordance when the model declares no saga.
+ *
+ * A button that opens an empty drawer is worse than no button: it reads as something being broken
+ * rather than as something not being there.
+ */
+function fillSagas(): void {
+  const sagas = model === undefined ? [] : sagasOf(model);
+  const chosen = sagaWhich.value;
+  sagaWhich.replaceChildren();
+  for (const saga of sagas) {
+    const option = document.createElement("option");
+    option.value = qualify(saga.id);
+    option.textContent = saga.id.name;
+    sagaWhich.append(option);
+  }
+  el("toggleSaga").hidden = sagas.length === 0;
+  if (sagas.length === 0) {
+    openSaga = undefined;
+    sagaView?.destroy();
+    sagaView = undefined;
+    toggleSaga(false);
+    return;
+  }
+
+  // A reload keeps the saga you were reading, unless it has gone.
+  const keep = sagas.find((x) => qualify(x.id) === chosen) ?? sagas[0]!;
+  sagaWhich.value = qualify(keep.id);
+  if (openSaga !== undefined || !sagaPanel.hidden) showSaga(keep);
+}
+
+/** Draws one saga, creating the view on first use. */
+function showSaga(saga: SagaIr): void {
+  if (model === undefined) return;
+  openSaga = saga;
+  sagaWhich.value = qualify(saga.id);
+
+  if (sagaView === undefined) {
+    sagaView = renderSaga(sagaCanvas, model, saga, {
+      // Clicking a message in the diagram selects it everywhere else, which is the whole of what
+      // "three views that agree" means here (`docs/design.md` 2.2).
+      onSelect: (id) => select(id),
+    });
+  } else {
+    sagaView.update(saga);
+  }
+  applyHighlight();
+  refreshSagaProgress();
+}
+
+/**
+ * The instance of a saga the view is currently about.
+ *
+ * An explicit `instance` selection wins. Otherwise it is the most recent instance of this saga at or
+ * before the playhead — "the one you are looking at" — found by walking back rather than forward,
+ * because a trace holding several instances should follow the replay rather than pin the first.
+ */
+function instanceKey(saga: SagaIr): string | undefined {
+  const qname = qualify(saga.id);
+  if (selection.k === "instance" && selection.saga === qname) return selection.key;
+
+  const upto = player === undefined ? trace.length : player.at + 1;
+  for (let i = upto - 1; i >= 0; i--) {
+    const event = trace[i]!;
+    if (event.saga === qname && event.sagaKey !== undefined) return event.sagaKey;
+  }
+  return undefined;
+}
+
+/**
+ * Draws one instance's progress over the declaration, as far as the playhead has got.
+ *
+ * Sliced at the playhead rather than reading the whole trace, so scrubbing the transport fills the
+ * saga in stage by stage. With no trace, or before playback has reached this saga, the diagram is the
+ * declaration and says so — a picture that implied a run nobody had played would be the one dishonest
+ * thing this view could do.
+ */
+function refreshSagaProgress(): void {
+  if (sagaView === undefined || openSaga === undefined) return;
+
+  const key = trace.length === 0 ? undefined : instanceKey(openSaga);
+  const upto = player === undefined ? trace : trace.slice(0, player.at + 1);
+  const progress = key === undefined ? undefined : progressOf(openSaga, upto, key);
+
+  sagaView.progress(progress);
+  if (progress === undefined) {
+    sagaState.textContent = "declaration";
+    return;
+  }
+  const where =
+    progress.terminal ?? (progress.waiting.length === 0 ? "started" : progress.waiting.join(" + "));
+  sagaState.textContent = `${progress.key} · ${where}`;
+}
+
+/** Opens or closes the saga drawer. One drawer at a time, as with the other two. */
+function toggleSaga(force?: boolean): void {
+  const open = force ?? sagaPanel.hidden;
+  sagaPanel.hidden = !open;
+  document.body.classList.toggle("saga-open", open);
+  if (!open) return;
+
+  toggleSequence(false);
+  toggleCompose(false);
+  // Opening with nothing chosen shows whichever saga the picker is on, or the selected one.
+  const wanted =
+    (model !== undefined && selection.k === "declaration" ? sagaById(model, selection.id) : undefined) ??
+    openSaga ??
+    (model === undefined ? undefined : sagasOf(model)[0]);
+  if (wanted !== undefined) showSaga(wanted);
+}
+
 /**
  * Opens or closes the sequence drawer.
  *
@@ -399,6 +532,7 @@ function toggleSequence(force?: boolean): void {
   document.body.classList.toggle("sequence-open", open);
   if (open) {
     toggleCompose(false);
+    toggleSaga(false);
     sequence?.update(trace);
     applyHighlight();
     sequence?.cursor(cursorKey());
@@ -424,6 +558,7 @@ function applyHighlight(): void {
   const highlight = resolve(join(model, trace), selection);
   view?.highlight(highlight);
   sequence?.highlight(highlight);
+  sagaView?.highlight(highlight);
 }
 
 function refreshTransport(): void {
@@ -437,6 +572,7 @@ function refreshTransport(): void {
       : `${shown + 1} / ${trace.length}  ${event.kind}`;
   drawTrack();
   sequence?.cursor(cursorKey());
+  refreshSagaProgress();
 }
 
 /**
@@ -496,6 +632,9 @@ function makePlayer(): void {
     timeline.hidden = true;
     el("toggleSequence").hidden = true;
     toggleSequence(false);
+    // The saga drawer stays: a declaration is worth reading before anything has run. It just has no
+    // run to draw over it any more.
+    refreshSagaProgress();
     return;
   }
   player = createPlayer(trace, { onEvent: showEvent, onChange: refreshTransport });
@@ -516,6 +655,7 @@ function makePlayer(): void {
   if (!sequencePanel.hidden) sequence.update(trace);
 
   refreshTransport();
+  refreshSagaProgress();
 }
 
 // ---- compose ---------------------------------------------------------------
@@ -584,8 +724,9 @@ function toggleCompose(force?: boolean): void {
   composePanel.hidden = !open;
   document.body.classList.toggle("compose-open", open);
   if (open) {
-    // One drawer at a time: both take the right-hand edge, and two would overlay each other.
+    // One drawer at a time: they all take the right-hand edge, and two would overlay each other.
     toggleSequence(false);
+    toggleSaga(false);
     if (composing === undefined) startComposing();
     else recheck();
   }
@@ -1002,6 +1143,7 @@ function draw(read: Sources): void {
   trees = ws.trees;
   model = ws.model;
   index = buildIndex(ws.model);
+  fillSagas();
   whole = buildGraph(ws.model, optionsFromForm());
   // The focus is an id too, so it survives this rebuild — and `applyFocus` shows everything rather
   // than nothing if the thing it names has gone.
@@ -1106,6 +1248,12 @@ paletteInput.addEventListener("keydown", (e) => {
 });
 
 el("toggleSequence").addEventListener("click", () => toggleSequence());
+el("toggleSaga").addEventListener("click", () => toggleSaga());
+el("sagaClose").addEventListener("click", () => toggleSaga(false));
+sagaWhich.addEventListener("change", () => {
+  const wanted = model === undefined ? undefined : sagasOf(model).find((x) => qualify(x.id) === sagaWhich.value);
+  if (wanted !== undefined) showSaga(wanted);
+});
 el("toggleCompose").addEventListener("click", () => toggleCompose());
 el("connect").addEventListener("click", () => armConnect());
 el("proposeClose").addEventListener("click", closeProposal);
@@ -1179,6 +1327,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "f" || e.key === "F") toggleFocus();
   if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
+  if ((e.key === "g" || e.key === "G") && !el("toggleSaga").hidden) toggleSaga();
   if (e.key === "c" || e.key === "C") toggleCompose();
   if (e.key === "n" || e.key === "N") armConnect();
   if (e.key === " ") {

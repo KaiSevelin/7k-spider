@@ -239,6 +239,8 @@ looking for.
 matters most: a node missing from the file is laid out **on its own**, never by re-running layout for
 the whole view. Writing it is mutation, which is increment 5.
 
+**A saga is not drawn here.** It has a view of its own (section 13); the graph stays bipartite.
+
 **Nothing is verified by looking except the picture.** The graph's derivation, the layout's stability,
 the stylesheet's validity, the server and the page-to-script contract are all tested. How it *looks* is
 checked by running it.
@@ -792,6 +794,10 @@ Each one is useful on its own, and none is a prerequisite rewrite of the one bef
    section 9: connect two things and the clause is written to the source. `rename` and `moveToPackage`
    are the two operations deliberately still absent.
 
+6. **The saga view** — the Process layer drawn, with a run drawn over it. **Done**, see section 13.
+   Not planned as an increment: it came out of auditing what the language and the tool could not
+   express or show between them, and it was the largest thing Spider had no picture of at all.
+
 Read-only first, and mutation last, because the authoring experience already exists in the extension
 (D67) while the no-unsaved-buffer, file-watcher, surgical-mutation problem is both the riskiest part
 and the one most likely to eat the schedule (D92).
@@ -821,3 +827,82 @@ A **local web app**, served by a command. The renderer goes in a package that kn
 host, so a **VS Code webview** can host the same bundle later (D92). A reviewer opening a flow or a
 colleague opening a shared trace is not necessarily in an editor, and the webview's real advantages —
 workspace access, file watching, writing files — only begin to matter at increment 5.
+
+## 13. The saga view
+
+The Process layer was a third of the language with no picture at all. The graph is topology — services,
+pipes, messages — and it draws **no node and no edge** for a saga (section 5.4), so a saga reached
+Spider only as a name in search and a lane in the sequence diagram. Everything needed to draw one was
+already in the IR: steps, stages, awaits, timeouts, inverses, terminals.
+
+### 13.1 Bands, not a flowchart
+
+The obvious drawing is a node per step and an arrow per outcome. That would look like BPMN and would be
+a lie about the language, because it invites the reader to look for branching 7K cannot express. A saga
+is a **sequence of stages**, each a set of steps that run at once (`04-process.md` 1.3), and stage order
+plus concurrency inside a stage is the whole of its structure. Bands show exactly that and nothing more.
+
+### 13.2 The spine is in the gutter, and steps hang off it
+
+Cards are a fixed width, left-aligned, and the saga's own line runs down a left gutter with a short stub
+to each card. Centring each stage and forking the line is the alternative, and it means solving a small
+layout problem at every stage boundary — the fork being the part that drifts when the model changes.
+With the spine in the gutter, a stage holding two steps is two stubs off one segment: stable, and a fair
+picture of "these share a stage".
+
+Outcomes are rows on the card rather than arrows. Drawing each as an arrow produces a hairball in which
+most arrows go to one of two places, so a `continue` is the spine carrying on and a `reject` or
+`abandon` is a stub to an exit rail running down to the terminal band. The rail is what makes every way
+out of a process countable.
+
+### 13.3 The silences are drawn
+
+A card says **no timeout** where there is none and **no inverse** where no `undo` was declared, and it
+distinguishes a deliberate `undo none` from an absent one — because the language does.
+
+Those are the two most consequential silences in the layer: one is `unbounded-step` or `saga-liveness`,
+the other `uncompensated`. A view that drew only what the author wrote would hide precisely the two
+things worth looking for. The same reasoning puts all three terminals in the band whether or not they
+have a `send`: a saga that can abandon and announces nothing when it does is a reachable silence.
+
+### 13.4 A run drawn over a declaration
+
+With a trace loaded, one instance's progress is drawn **on top of** the declaration: the steps it
+completed, the branches it is waiting in, what timed out, what was unwound. Sliced at the playhead, so
+scrubbing the transport fills the saga in stage by stage.
+
+Not a separate "instance view", because that would be two drawings of one saga that could disagree, and
+"where did order ORD-1041 stop" is a question about the declared process. With no trace, the diagram is
+the declaration and the panel says so — a picture implying a run nobody played would be the one
+dishonest thing this view could do.
+
+### 13.5 What the trace could not say
+
+Being the first consumer of a published artifact found a gap in it again. The saga view asked which
+steps an instance had completed, and the NDJSON trace could not answer:
+
+- the step name existed **only inside `detail`**, which the format declares is prose and must never be
+  matched on — so the only consumer that needed it had to break the rule to get it;
+- `saga-advanced` means a step's *action ran*, and one of the actions is `reject`, so the events did not
+  distinguish a step that succeeded from one whose reply ended the saga.
+
+Reading `saga-advanced` as success is what the first version of `progressOf` did, and the example's own
+trace contradicted it within minutes: an instance that rejected inside `reserve` showed a completed step
+with no compensation, when `undo` runs for every step that completed. D102 adds `step` as data and
+states the completion rule in `30-scenarios.md` 7.4; the invariant that caught it — everything
+compensated must have completed — is now asserted over the example trace in both repositories.
+
+### 13.6 What is not here yet
+
+**The saga is still not in the graph.** Drawing it there would mean a third node kind in a bipartite
+graph whose two-kind rule is load bearing (section 3.1), and a saga is not a participant in a topology
+— it drives one. The selection model is the linkage instead: clicking a message in the saga view lights
+it in the graph and the sequence.
+
+**No instance picker.** The drawer shows the instance the playhead is inside, or the most recent one
+before it. A trace holding many instances of one saga has no way to choose among them except by
+scrubbing, and an `instance` selection is already in the selection model waiting to be offered.
+
+**Compensation is not drawn as a path.** An inverse is named on the card that owns it, which is where
+the language puts it, but the unwinding itself — a reverse walk through the completed steps — is only
+visible as marks on the cards rather than as a path.

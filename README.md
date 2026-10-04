@@ -1,8 +1,9 @@
 # 7K Spider
 
-Three views over a [7K](https://github.com/KaiSevelin/7k) model and what happened when it ran: a
-**graph** (who talks to whom), a **sequence** (what followed what), and a **timeline** (when, and how
-long it waited). Select something in one, and it lights up in all three.
+Views over a [7K](https://github.com/KaiSevelin/7k) model and what happened when it ran: a **graph**
+(who talks to whom), a **sequence** (what followed what), a **timeline** (when, and how long it
+waited), and a **saga** view (what a process is declared to do, and where one run of it got to).
+Select something in one, and it lights up in the others.
 
 Spider is not part of the 7K language — `00-overview.md` puts it outside — so nothing here constrains
 a conforming implementation.
@@ -29,20 +30,20 @@ npm run serve <paths>                        # the graph
 npm run serve <paths> -- --trace run.ndjson  # and watch a trace play over it
 ```
 
-`Space` plays, arrows step, `s` opens the sequence diagram, `c` the composer, `n` connects two things,
-`Ctrl-K` finds things, `f` focuses.
+`Space` plays, arrows step, `s` opens the sequence diagram, `g` the saga view, `c` the composer,
+`n` connects two things, `Ctrl-K` finds things, `f` focuses.
 
 It watches the files, so editing a `.7k` redraws the page — and because the layout is deterministic,
 the parts you did not change stay where they were.
 
 ```
-npm test        # 270 tests
+npm test        # 307 tests
 npm run build
 ```
 
-The sequence and timeline views do not exist yet. The **selection model** that will link all three is
-built and tested, and the graph already uses it: clicking a node resolves a selection through the same
-one function the other two views will.
+Every increment is done. The **selection model** links the views: clicking a node, a sequence row, a
+lane heading or a message inside the saga view all resolve through the same one function, which is why
+there is no second resolver to keep in step.
 
 Read [`docs/design.md`](docs/design.md) first. It settles the selection model, what the graph draws and
 why, the increments, and what Spider is allowed to know.
@@ -101,6 +102,23 @@ timeline is for — so the transport compresses and the track tells the truth.
 
 A trace file routinely holds several runs, which cannot be played as one: each starts its clock where it
 likes. There is a run picker.
+
+## The saga view
+
+A saga is drawn as **bands of stages**, not as a flowchart. Steps written in one `parallel` block share
+a stage and sit side by side; a bare step is a stage of its own. A node-and-arrow drawing would look
+like BPMN and invite a reader to look for branching 7K cannot express.
+
+Each card names what the step sends, every `on` clause and what it does, its timeout and its inverse —
+and it names the two **absences** as well: `no timeout` and `no inverse`, with a deliberate `undo none`
+read differently from an omission. Those are the layer's two consequential silences, so a view that drew
+only what was written would hide exactly what to look for.
+
+With a trace loaded, one instance's progress is drawn over the declaration and sliced at the playhead,
+so scrubbing the timeline fills the saga in stage by stage. Which steps *completed* is not simply which
+ones the trace advanced through — `saga-advanced` fires when a step's action runs, and one of the
+actions is `reject` — so Spider applies the rule `30-scenarios.md` 7.4 states, and asserts the
+invariant that falls out of it: everything compensated must have completed.
 
 ## The sequence diagram
 
@@ -212,6 +230,8 @@ From there, three rules:
 3. **Sequence** — a sequence diagram, with all three views linked. **Done.**
 4. **Composer, read-only** — build a message and watch it validated. **Done.**
 5. **Mutation** — saved layout and editing the model. **Done**, except `rename` and `moveToPackage`.
+6. **The saga view** — the Process layer drawn, with a run drawn over it. **Done.** Not planned: it came
+   out of auditing what the language and the tool could not express or show between them.
 
 Read-only first and mutation last, because the authoring experience already exists in the
 [VS Code extension](https://github.com/KaiSevelin/7k-vscode) while surgical mutation is the riskiest
