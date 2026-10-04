@@ -25,10 +25,19 @@ and attaches to the browser too, so breakpoints in `src/web/` work as well.
 
 Or point it at your own workspace:
 
+**In VS Code**, open `../7K/7k.code-workspace` and press <kbd>F5</kbd> — or open this folder on its
+own, where <kbd>F5</kbd> does the same thing. Either way Spider starts with the example loaded and the
+browser opens itself.
+
 ```
 npm run serve <paths>                        # the graph
 npm run serve <paths> -- --trace run.ndjson  # and watch a trace play over it
+npm run demo                                 # the example, with its trace
 ```
+
+The default port is 7007, and a second instance walks to the next free one rather than failing — so
+pressing <kbd>F5</kbd> twice gives you two Spiders rather than a stack trace. `--port <n>` is a
+requirement rather than a preference: if that one is taken, it says so and stops.
 
 `Space` plays, arrows step, `s` opens the sequence diagram, `g` the saga view, `c` the composer,
 `n` connects two things, `Ctrl-K` finds things, `f` focuses.
@@ -37,7 +46,7 @@ It watches the files, so editing a `.7k` redraws the page — and because the la
 the parts you did not change stay where they were.
 
 ```
-npm test        # 312 tests
+npm test        # 314 tests
 npm run build
 ```
 

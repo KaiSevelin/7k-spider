@@ -5,7 +5,7 @@
  * everything about the model happens in the page (`docs/design.md` 1).
  */
 
-import { serve } from "./serve.js";
+import { serve, type Serving } from "./serve.js";
 
 const HELP = `7k Spider — three views over a 7K model and a trace of it running.
 
@@ -101,13 +101,22 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
-  const serving = await serve({
-    paths: parsed.paths,
-    ...(parsed.port === undefined ? {} : { port: parsed.port }),
-    ...(parsed.host === undefined ? {} : { host: parsed.host }),
-    ...(parsed.trace === undefined ? {} : { trace: parsed.trace }),
-    watch: parsed.watch,
-  });
+  // A port in use is an expected way for this to fail, so it is reported the way a bad argument is —
+  // one line, exit 2 — rather than through the top-level handler, which prints a stack because
+  // anything reaching it is a surprise.
+  let serving: Serving;
+  try {
+    serving = await serve({
+      paths: parsed.paths,
+      ...(parsed.port === undefined ? {} : { port: parsed.port }),
+      ...(parsed.host === undefined ? {} : { host: parsed.host }),
+      ...(parsed.trace === undefined ? {} : { trace: parsed.trace }),
+      watch: parsed.watch,
+    });
+  } catch (cause) {
+    process.stderr.write(`${cause instanceof Error ? cause.message : String(cause)}\n`);
+    return 2;
+  }
 
   const files = await serving.files();
   if (files.length === 0) {

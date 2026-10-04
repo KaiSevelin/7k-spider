@@ -9,9 +9,10 @@
 
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { collect, serve, type Serving } from "../src/serve.js";
+import { DEFAULT_PORT, collect, serve, type Serving } from "../src/serve.js";
 import { parse } from "../src/cli.js";
 import { LAYOUT, PIPE_SHAPE } from "../src/render.js";
 
@@ -110,6 +111,54 @@ describe("the layout", () => {
   it("gives every pipe kind its own shape", () => {
     expect(new Set(Object.values(PIPE_SHAPE)).size).toBe(Object.keys(PIPE_SHAPE).length);
     expect(Object.keys(PIPE_SHAPE).sort()).toEqual(["queue", "stream", "topic"]);
+  });
+});
+
+describe("a port already in use", () => {
+  /**
+   * Pressing F5 twice is the commonest way to arrive here, and `server.listen` reports the failure
+   * through an `error` event rather than its callback — so waiting on the callback alone ended the
+   * process with a stack trace out of `node:net`, which reads as Spider being broken rather than as
+   * Spider already running.
+   */
+  it("walks up to the next free one when no port was asked for", async () => {
+    // The walk only applies to the default, so the test has to occupy that exact port — which is the
+    // one thing the rest of this suite avoids, since a fixed port fights a running Spider. Hence the
+    // blocker and the skip: if something already holds it, there is nothing here left to prove.
+    const blocker = createServer();
+    const held = await new Promise<boolean>((done) => {
+      blocker.once("error", () => done(false));
+      blocker.once("listening", () => done(true));
+      blocker.listen(DEFAULT_PORT, "127.0.0.1");
+    });
+    if (!held) return;
+
+    try {
+      const second = await serve({ paths: [dir], watch: false });
+      try {
+        expect(second.port).toBeGreaterThan(DEFAULT_PORT);
+        expect(second.url).toContain(String(second.port));
+        // And it is a working server, not merely a bound socket.
+        expect((await fetch(`${second.url}sources.json`)).status).toBe(200);
+      } finally {
+        await second.close();
+      }
+    } finally {
+      await new Promise<void>((done) => blocker.close(() => done()));
+    }
+  });
+
+  it("refuses, readably, when the port was asked for by name", async () => {
+    // Explicit is a requirement rather than a preference: silently serving somewhere else would make
+    // a reverse proxy or a bookmark point at nothing.
+    const first = await serve({ paths: [dir], watch: false, port: 0 });
+    try {
+      await expect(serve({ paths: [dir], watch: false, port: first.port })).rejects.toThrow(
+        /already in use/,
+      );
+    } finally {
+      await first.close();
+    }
   });
 });
 

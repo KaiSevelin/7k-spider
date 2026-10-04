@@ -246,6 +246,61 @@ const MIME: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
 };
 
+/** Where Spider listens unless told otherwise. Exported because a test has to occupy it to prove the walk. */
+export const DEFAULT_PORT = 7007;
+
+/** How many ports above the default to try before giving up. */
+const PORT_ATTEMPTS = 8;
+
+/**
+ * Binds the server, returning the port it got.
+ *
+ * `server.listen` reports failure through an `error` event, not through its callback. Waiting on the
+ * callback alone leaves that event unhandled, and an unhandled `error` on a `Server` ends the process
+ * with a stack trace out of `node:net` — which reads as Spider being broken rather than as Spider
+ * already running. So the event is what this waits on.
+ */
+async function listen(
+  server: Server,
+  from: number,
+  host: string,
+  extra: number,
+): Promise<number> {
+  for (let port = from; ; port++) {
+    try {
+      await new Promise<void>((done, fail) => {
+        const onError = (cause: Error): void => {
+          server.removeListener("listening", onListening);
+          fail(cause);
+        };
+        const onListening = (): void => {
+          server.removeListener("error", onError);
+          done();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(port, host);
+      });
+      return port;
+    } catch (cause) {
+      const code = (cause as { code?: string }).code;
+      if (code !== "EADDRINUSE") {
+        throw new Error(
+          `cannot listen on ${host}:${port}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+      if (port >= from + extra) {
+        throw new Error(
+          extra === 0
+            ? `port ${port} is already in use — is Spider already running there?`
+            : `ports ${from} to ${port} are all in use — is Spider already running? ` +
+              "Stop it, or pass `--port <n>`",
+        );
+      }
+    }
+  }
+}
+
 export async function serve(options: ServeOptions): Promise<Serving> {
   const paths = options.paths.map((p) => resolvePath(p));
   const tracePath = options.trace === undefined ? undefined : resolvePath(options.trace);
@@ -475,11 +530,17 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     }
   }
 
-  const port = options.port ?? 7007;
+  const wanted = options.port ?? DEFAULT_PORT;
   const host = options.host ?? "127.0.0.1";
-  await new Promise<void>((done) => server.listen(port, host, done));
+  // A port explicitly asked for is a requirement; the default is a preference. Pressing F5 twice is
+  // the commonest way to arrive here, and walking up is what makes the second one work.
+  const walk = options.port === undefined ? PORT_ATTEMPTS : 0;
+  const bound = await listen(server, wanted, host, walk);
+  if (bound !== wanted) {
+    process.stderr.write(`port ${wanted} was in use, so this one is on ${bound}\n`);
+  }
 
-  const actual = (server.address() as { port: number } | null)?.port ?? port;
+  const actual = (server.address() as { port: number } | null)?.port ?? bound;
 
   return {
     url: `http://${host}:${actual}/`,
