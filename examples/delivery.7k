@@ -74,6 +74,24 @@ message ParcelCollected v1.0 @event {
   parcelRef: common.ParcelRef @role(businessKey)
 }
 
+// "Where is my parcel?" — asked by a recipient refreshing a page, so asked constantly and asked twice.
+//
+// A `@query` rather than a `@command`, and the difference is not cosmetic. A deduplication key defaults
+// to the `@role(businessKey)` field, and this has one, so as a command the second refresh would be
+// absorbed and answered with nothing — `deduplicated` in the trace, which looks like the system
+// working. Answering a question twice is correct, so a query carries no key (`02-contract.md` 5.5).
+message WhereIsParcel v1.0 @query {
+  parcelRef: common.ParcelRef @role(businessKey)
+}
+
+message ParcelWhereabouts v1.0 @event {
+  parcelRef:   common.ParcelRef @role(businessKey)
+  // Absent until a compartment has been reserved, which is the honest shape of an answer to a question
+  // asked before anything has happened.
+  compartment: common.Compartment?
+  outcome:     common.Outcome?
+}
+
 // Fired by the nightly schedule. The day is the business key, so a timer that fires twice sweeps
 // once.
 message SweepExpired v1.0 @command {
@@ -103,6 +121,14 @@ pipe events : topic {
   retention 30d
 }
 
+// Reads. A queue, because a question expects exactly one answer — on a topic every subscriber would
+// answer and the asker could not tell which answer it received (`query-on-topic`).
+pipe reads : queue {
+  ordering  by operatorId
+  carries   WhereIsParcel
+  retention 1d
+}
+
 // ---------------------------------------------------------------- services
 
 // The courier's handset. Drops parcels, and watches for the answer so it can show the courier
@@ -114,9 +140,18 @@ service CourierApp @external {
   reacts HandoverFinished  from events { once per parcelRef; replies none }
 }
 
-// The recipient's phone. Opens the door, which is how a collection is observed at all.
+// The recipient's phone. Opens the door, which is how a collection is observed at all — and asks where
+// the parcel is, repeatedly, which is what the query is for.
 service RecipientApp @external {
   emits ParcelCollected to events
+  emits WhereIsParcel   to reads
+
+  reacts ParcelWhereabouts from events {
+    // No key: two identical questions deserve two answers. A query would carry none anyway; saying it
+    // here is for the reader.
+    once per none
+    replies none
+  }
 }
 
 // Accepts drops and hosts the Handover saga.
@@ -189,8 +224,15 @@ service SweepService {
 // Reads the outcomes. Exists so the events above are consumed by something, which is what
 // `orphan-message` is for asking about.
 service Reporting {
+  emits ParcelWhereabouts to events
+
   reacts HandoverFinished from events { once per parcelRef; replies none }
   reacts SweepFinished    from events { once per day;       replies none }
+
+  // Answers the question. One service answers, because one answer is what a question expects.
+  reacts WhereIsParcel from reads {
+    replies ParcelWhereabouts
+  }
   reacts notify.SmsSent     from notify.events { once per parcelRef; replies none }
   reacts notify.SmsRejected from notify.events { once per parcelRef; replies none }
 }

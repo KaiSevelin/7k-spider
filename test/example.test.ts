@@ -137,6 +137,24 @@ describe("it contains what it says it contains", () => {
     expect(schedule.kind).toBe("schedule");
   });
 
+  it("a query, which carries no deduplication key", () => {
+    // "Where is my parcel?", asked by a recipient refreshing a page — so asked twice, by a caller with
+    // nothing of their own to deduplicate on. As a command the second refresh would be absorbed and
+    // answered with silence.
+    const m = model();
+    const asked = m.decls.find((d) => d.id.name === "WhereIsParcel");
+    expect(asked?.kind).toBe("message");
+    if (asked?.kind !== "message") return;
+    expect(asked.intent).toBe("query");
+
+    // On a queue, because a question expects exactly one answer.
+    const g = buildGraph(m);
+    const edge = g.edges.find((e) => e.messages.includes("parcel.delivery.WhereIsParcel"));
+    expect(edge?.to).toBe("pipe:parcel.delivery.reads");
+    const reads = m.decls.find((d) => d.id.name === "reads");
+    expect(reads?.kind === "pipe" && reads.pipeKind).toBe("queue");
+  });
+
   it("a cross-field invariant, which a JSON Schema projection could not express", () => {
     const m = model();
     const reserved = named(m, "CompartmentReserved");
