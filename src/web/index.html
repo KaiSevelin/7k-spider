@@ -339,6 +339,7 @@
         border-bottom: 1px solid var(--line);
       }
       .panelHead select { flex: 1; }
+      .panelHead .spacer { flex: 1; }
       #composeState { color: var(--ink-dim); white-space: nowrap; }
       #composeState.bad { color: var(--warn); }
       #composeState.good { color: var(--accent); }
@@ -599,20 +600,20 @@
       #openState.bad { color: var(--warn); }
 
       /* What a run would write, before it writes it.
-         A dialog rather than a drawer: it is a decision you make and then leave, like `#propose`. */
+         A drawer rather than a dialog, which `#propose` still is: generated code is something you
+         read *against* the graph — click a card and the declarations it came from light up behind it
+         — and a dialog in the middle of the screen covers the thing you are comparing it to. It also
+         means the panel can stay open while you work, which a decision you make and leave cannot. */
       #preview {
         position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        width: min(940px, calc(100% - 24px));
-        height: min(620px, calc(100% - 24px));
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(560px, 46vw);
         display: flex;
         flex-direction: column;
         background: var(--surface);
-        border: 1px solid var(--accent);
-        border-radius: 8px;
-        box-shadow: 0 10px 34px rgb(0 0 0 / 26%);
+        border-left: 1px solid var(--line);
         z-index: 6;
       }
       #preview[hidden] { display: none; }
@@ -642,7 +643,12 @@
         background: var(--surface);
         border-bottom: 1px solid var(--line);
         font-size: 12px;
+        cursor: pointer;
       }
+      .doc > header:hover { background: var(--package); }
+      /* Shut, the header *is* the card, so it owns the bottom edge rather than drawing a line to
+         nothing underneath it. */
+      .doc:not(.open) > header { border-bottom: 0; }
       .doc > header .path {
         font-family: var(--mono);
         font-weight: 600;
@@ -694,11 +700,24 @@
         font-size: 12px;
         line-height: 1.45;
         overflow: auto;
-        /* Three rows, which is enough to tell one file from another and not enough to scroll past. */
-        max-height: calc(3 * 1.45em + 12px);
-        cursor: pointer;
+        max-height: 46vh;
       }
-      .doc.open pre { max-height: 46vh; cursor: default; }
+      /* Shut is shut. Three rows of someone else's C# told you nothing a path and a language did not,
+         and cost the one thing a list of twenty files needs, which is being a list. */
+      .doc:not(.open) pre { display: none; }
+      /* The twisty is the whole affordance, so it has to be the thing the eye lands on first. */
+      .doc > header .twisty {
+        flex: none;
+        width: 12px;
+        color: var(--ink-dim);
+        text-align: center;
+      }
+      /* The glyph comes from the class rather than from script, so `open` is the only state there is
+         and nothing can disagree with it — including the open-everything button, which sets the class
+         on twenty cards and updates no glyphs at all. */
+      .doc > header .twisty::before { content: "▸"; }
+      .doc.open > header .twisty::before { content: "▾"; }
+      .doc.open > header .twisty { color: var(--accent); }
       #previewNote { color: var(--ink-dim); font-size: 12px; }
       #previewState { color: var(--ink-dim); }
 
@@ -960,6 +979,7 @@
       <button type="button" id="toggleSaga" title="the saga being declared (g)" hidden>
         saga
       </button>
+      <button type="button" id="toggleGenerated" title="the generated code (v)" hidden>generated</button>
       <button type="button" id="toggleCompose" title="build a message (c)">compose</button>
       <button type="button" id="connect" title="connect two things (n)">connect&hellip;</button>
       <button type="button" id="toggleLegend" title="what the shapes mean (?)">legend</button>
@@ -1058,7 +1078,9 @@
       <div id="preview" hidden>
         <header class="panelHead">
           <b id="previewWhat"></b>
-          <button type="button" id="previewClose" title="cancel (Esc)">&times;</button>
+          <span class="spacer"></span>
+          <button type="button" id="previewAll" title="open every file (e)">&#9656;&#9656;</button>
+          <button type="button" id="previewClose" title="hide this panel (Esc)">&times;</button>
         </header>
         <div id="previewBody">
           <ol id="previewDocs"></ol>

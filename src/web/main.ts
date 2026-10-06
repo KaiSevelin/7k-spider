@@ -1230,6 +1230,12 @@ function documentCard(file: Planned, at: Date, refusals: readonly Refusal[]): HT
 
   const header = document.createElement("header");
 
+  // Shut by default, and shut means the header alone: see `.doc pre` in `index.html`.
+  const twisty = document.createElement("span");
+  twisty.className = "twisty";
+  twisty.setAttribute("aria-hidden", "true");
+  header.append(twisty);
+
   const path = document.createElement("span");
   path.className = "path";
   path.textContent = file.path;
@@ -1308,21 +1314,21 @@ function documentCard(file: Planned, at: Date, refusals: readonly Refusal[]): HT
   code.textContent = file.content;
   card.append(code);
 
-  // Three rows is enough to tell one file from another and not enough to scroll past. Opening it
-  // also selects what it came from, which lights the declarations up in every other view at once —
-  // the whole reason this is a panel in Spider and not a file browser somewhere else.
-  const toggle = (): void => {
+  // The whole header toggles, which is the only affordance a list of twenty needs and is where the
+  // hand already is. Every button in it stops the click, so copy, dismiss and the issue icons do
+  // their own thing without the card opening underneath them.
+  //
+  // Opening also selects what the file came from, which lights those declarations up in every other
+  // view at once — the whole reason this is a panel in Spider and not a file browser somewhere else.
+  header.addEventListener("click", () => {
     const open = card.classList.toggle("open");
+    sayAllState();
     if (!open) return;
     const first = file.from[0];
     if (first === undefined) return;
     const found = model?.decls.find((d) => qualify(d.id) === first);
     if (found !== undefined) select(idOf(found));
-  };
-  code.addEventListener("click", () => {
-    if (!card.classList.contains("open")) toggle();
   });
-  path.addEventListener("click", toggle);
 
   return card;
 }
@@ -1383,6 +1389,46 @@ function runCard(outcome: Outcome): HTMLElement | undefined {
   return card;
 }
 
+/**
+ * The cards that have something to open.
+ *
+ * The run's own card is a `.doc` with no `pre` — a manifest that would not parse has no code to
+ * show — so it is not something "open everything" has an opinion about.
+ */
+const openable = (): HTMLElement[] =>
+  [...el("previewDocs").querySelectorAll<HTMLElement>(".doc")].filter(
+    (c) => c.querySelector("pre") !== null,
+  );
+
+const allOpen = (): boolean => {
+  const cards = openable();
+  return cards.length > 0 && cards.every((c) => c.classList.contains("open"));
+};
+
+/** Open or shut every file at once. */
+function setAllOpen(open: boolean): void {
+  for (const card of openable()) card.classList.toggle("open", open);
+  sayAllState();
+}
+
+/**
+ * Do whatever the list is not already doing.
+ *
+ * Read from the cards rather than kept as a flag, because a card dismissed, a second run, or one
+ * header clicked since would each make a flag a lie.
+ */
+const flipAll = (): void => setAllOpen(!allOpen());
+
+/** The button says what it will do next, not what it did. */
+function sayAllState(): void {
+  const button = el("previewAll") as HTMLButtonElement;
+  button.hidden = openable().length === 0;
+  const open = allOpen();
+  button.textContent = open ? "\u25BE\u25BE" : "\u25B8\u25B8";
+  button.title = open ? "shut every file (e)" : "open every file (e)";
+  button.classList.toggle("on", open);
+}
+
 function openPreview(label: string, outcome: Outcome): void {
   const at = new Date();
 
@@ -1403,7 +1449,17 @@ function openPreview(label: string, outcome: Outcome): void {
   ].filter((p) => p !== undefined);
   el("previewState").textContent = drift.join(" · ");
 
+  sayAllState();
+  // There is a way back now, because the panel hides rather than being dismissed.
+  el("toggleGenerated").hidden = false;
   el("preview").hidden = false;
+}
+
+/** The drawer, shown or hidden, with whatever was last generated still in it. */
+function toggleGenerated(): void {
+  const panel = el("preview");
+  if (panel.hidden && el("previewDocs").children.length === 0) return;
+  panel.hidden = !panel.hidden;
 }
 
 
@@ -2013,6 +2069,8 @@ document.addEventListener("click", (e) => {
 });
 void loadProviders();
 el("previewClose").addEventListener("click", () => closePreview());
+el("previewAll").addEventListener("click", () => flipAll());
+el("toggleGenerated").addEventListener("click", () => toggleGenerated());
 el("toggleData").addEventListener("click", () => toggleData());
 el("dataClose").addEventListener("click", () => toggleData(false));
 el("dataDepth").addEventListener("change", () => showData());
@@ -2132,6 +2190,10 @@ document.addEventListener("keydown", (e) => {
   if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
   if ((e.key === "g" || e.key === "G") && !el("toggleSaga").hidden) toggleSaga();
   if (e.key === "c" || e.key === "C") toggleCompose();
+  if ((e.key === "v" || e.key === "V") && !el("toggleGenerated").hidden) toggleGenerated();
+  // Only while the drawer is open: `e` is a letter, and a letter that does something invisible is
+  // worse than no shortcut.
+  if ((e.key === "e" || e.key === "E") && !el("preview").hidden) flipAll();
   if (e.key === "n" || e.key === "N") armConnect();
   if (e.key === " ") {
     player?.toggle();
