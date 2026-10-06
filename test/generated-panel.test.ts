@@ -284,6 +284,23 @@ describe.skipIf(!haveProviders)("what the menu offers", () => {
     }
   }, 60_000);
 
+  /**
+   * Only the whole-system case is driven from here.
+   *
+   * A right click on one *node* cannot be: the graph is drawn by Cytoscape into a canvas, so a pipe is
+   * not an element to aim at. Which providers go grey for a pipe is checked where the answer actually
+   * comes from — against each provider's declared kinds, in `demo-providers.test.ts`.
+   */
+  it("leaves every provider live for the whole system", async () => {
+    if (!ready || page === undefined) return;
+    await page.keyboard.press("Escape");
+    const box = await page.locator("#graph").boundingBox();
+    await page.mouse.click(box!.x + 12, box!.y + 12, { button: "right" });
+    await page.waitForSelector("#menu:not([hidden])");
+    expect(await page.locator("#menu button[disabled]").count()).toBe(0);
+    await page.keyboard.press("Escape");
+  });
+
   it("says so plainly when a model registers no providers at all", async () => {
     if (!ready || browser === undefined) return;
 

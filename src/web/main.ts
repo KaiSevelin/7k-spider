@@ -934,6 +934,8 @@ interface ProviderInfo {
   readonly name: string;
   readonly target: string;
   readonly layouts: readonly string[];
+  /** The declaration kinds it emits for, as the provider itself declares them. */
+  readonly emits: readonly string[];
 }
 
 let providers: readonly ProviderInfo[] = [];
@@ -1006,23 +1008,32 @@ function openMenu(
   // that says why is better than a row that looks ready and then does nothing.
   const blocked = cannotGenerate();
 
+  // What is selected, by kind, so a provider that emits for none of it can say so. Empty for the
+  // whole system, which no provider can be excluded from.
+  const chosen = kindsOf(at);
+
+  const why = (provider: ProviderInfo): string | undefined =>
+    blocked ?? (emitsForAny(provider, chosen) ? undefined : `nothing to generate from ${sayKinds(chosen)}`);
+
   for (const provider of providers) {
     rows.push(
       item(
         `generate ${provider.name}`,
         provider.target,
         () => void generate(only, label, provider.name),
-        blocked,
+        why(provider),
       ),
     );
   }
   if (providers.length > 1) {
+    // Live while *any* provider would produce something, because that is what it does.
+    const none = providers.every((p) => why(p) !== undefined);
     rows.push(
       item(
         "generate everything",
         "every provider in the manifest",
         () => void generate(only, label),
-        blocked,
+        none ? (blocked ?? `nothing to generate from ${sayKinds(chosen)}`) : undefined,
       ),
     );
   }
@@ -1052,6 +1063,45 @@ function openMenu(
  * stays where it is: the run says `nothing to generate — no provider emits for it`, after the fact and
  * in one line.
  */
+/**
+ * The kinds of declaration a right click has in hand.
+ *
+ * Empty means the whole system, which is not the same as nothing: every provider emits for something
+ * somewhere in a model, so there is nothing to exclude.
+ */
+function kindsOf(at: { id?: SelectionId; marked: readonly SelectionId[] }): Set<string> {
+  const ids =
+    at.id !== undefined && at.marked.length > 1 && at.marked.includes(at.id)
+      ? at.marked
+      : at.id === undefined
+        ? []
+        : [at.id];
+
+  const kinds = new Set<string>();
+  for (const id of ids) {
+    const found = model?.decls.find((d) => qualify(d.id) === qnameOf(id));
+    // The id carries its own kind for anything the graph did not draw, which is the data view's rows.
+    if (found !== undefined) kinds.add(found.kind);
+    else {
+      const at2 = id.indexOf(":");
+      if (at2 > 0) kinds.add(id.slice(0, at2));
+    }
+  }
+  return kinds;
+}
+
+/** Whether a provider emits for anything in hand. The whole system always counts. */
+const emitsForAny = (provider: ProviderInfo, kinds: ReadonlySet<string>): boolean =>
+  kinds.size === 0 || [...kinds].some((k) => provider.emits.includes(k));
+
+const sayKinds = (kinds: ReadonlySet<string>): string => {
+  const all = [...kinds].sort();
+  if (all.length === 0) return "this";
+  if (all.length === 1) return `a ${all[0]!}`;
+  if (all.length === 2) return `a ${all[0]!} and a ${all[1]!}`;
+  return `${all.slice(0, -1).join(", ")} and ${all.at(-1)!}`;
+};
+
 function cannotGenerate(): string | undefined {
   if (lastDiagnostics.some((d) => d.severity === "error")) return "the model does not check out";
   return undefined;

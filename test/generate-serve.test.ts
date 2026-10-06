@@ -46,6 +46,9 @@ const PROVIDER = `export const spy = {
   name: "spy",
   target: "a test",
   layouts: ["single"],
+  // Required of a provider now: the kinds it emits for, so a host can tell what it would do with a
+  // selection without asking it to do it. This one only ever makes a file from a message.
+  emits: ["message"],
   options: [],
   generate(request) {
     return {

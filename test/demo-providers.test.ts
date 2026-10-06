@@ -17,7 +17,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { parseManifest } from "@sevenk/generate";
+import { buildWorkspace, qualify } from "@sevenk/core";
+import { parseManifest, plan } from "@sevenk/generate";
 import { MANIFEST, planFor, providersFor, describeProviders } from "../src/generate.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -131,5 +132,85 @@ describe.skipIf(!installed)("pressing F5 and asking to generate", () => {
     const before = (await readdir(EXAMPLES)).sort();
     await planFor(await sources(), EXAMPLES, {});
     expect((await readdir(EXAMPLES)).sort()).toEqual(before);
+  });
+});
+
+/**
+ * What each provider says it emits for, against what it does.
+ *
+ * `emits` is why the menu can grey a choice before anyone clicks it, so a declaration that drifts from
+ * the behaviour would grey the wrong rows — offering a provider that produces nothing, or hiding one
+ * that would have. The run reports a provider that emits *outside* its kinds; this is the other
+ * direction, which nothing can catch at runtime: a kind declared and never honoured.
+ *
+ * Over the selector kinds a reader can actually pick. `record`, `value`, `enum` and `envelope` are
+ * declared by the code providers and are real — a selected message drags its types along — but there
+ * is no `record:` selector to aim at one, so they are not checkable this way.
+ */
+describe.skipIf(!installed)("what a provider says it emits for", () => {
+  const SELECTABLE = ["message", "pipe", "service", "saga", "schedule"] as const;
+
+  const modelOf = async () => {
+    const files = await sources();
+    return buildWorkspace(files.map((f) => ({ path: f.path, source: f.source }))).model;
+  };
+
+  /** How many files a provider makes when the selection is one declaration of this kind. */
+  const filesFor = async (name: string, kind: string): Promise<number> => {
+    const { providers } = await providersFor(await manifestOf(), EXAMPLES);
+    const provider = providers.get(name);
+    if (provider === undefined) throw new Error(`no provider \`${name}\``);
+    const model = await modelOf();
+
+    let total = 0;
+    for (const decl of model.decls.filter((d) => d.kind === kind)) {
+      const result = plan(
+        model,
+        { out: "o", emit: [{ provider: name, out: name, only: `${kind}:${qualify(decl.id)}` }] },
+        { providers: new Map([[name, provider]]) },
+      );
+      total += result.files.length;
+    }
+    return total;
+  };
+
+  it("emits nothing for a kind it did not declare", async () => {
+    const { providers } = await providersFor(await manifestOf(), EXAMPLES);
+    for (const [name, provider] of providers) {
+      for (const kind of SELECTABLE) {
+        if (provider.emits.includes(kind)) continue;
+        expect(await filesFor(name, kind), `${name} declares no \`${kind}\``).toBe(0);
+      }
+    }
+  }, 120_000);
+
+  it("emits something for every selectable kind it did declare", async () => {
+    const { providers } = await providersFor(await manifestOf(), EXAMPLES);
+    for (const [name, provider] of providers) {
+      for (const kind of SELECTABLE) {
+        if (!provider.emits.includes(kind)) continue;
+        expect(await filesFor(name, kind), `${name} declares \`${kind}\``).toBeGreaterThan(0);
+      }
+    }
+  }, 120_000);
+
+  /** The layers, stated once so a wrong move in a provider shows up as a changed expectation here. */
+  it("splits along the layers the specification does", async () => {
+    const { providers } = await providersFor(await manifestOf(), EXAMPLES);
+    expect([...providers.get("bicep")!.emits]).toEqual(["pipe"]);
+    expect([...providers.get("sqlserver")!.emits].sort()).toEqual(["message", "record"]);
+    for (const code of ["csharp", "node"]) {
+      const emits = [...providers.get(code)!.emits];
+      expect(emits).toContain("message");
+      expect(emits).toContain("service");
+      expect(emits).toContain("saga");
+      expect(emits).not.toContain("pipe");
+    }
+  });
+
+  /** Nobody emits for a schedule, so every row greys on one — which is worth knowing deliberately. */
+  it("has no provider for a schedule, so the menu greys on one", async () => {
+    const { providers } = await providersFor(await manifestOf(), EXAMPLES);
+    for (const [, provider] of providers) expect(provider.emits).not.toContain("schedule");
   });
 });

@@ -43,12 +43,26 @@ export interface ProviderInfo {
   readonly name: string;
   readonly target: string;
   readonly layouts: readonly string[];
+  /**
+   * The declaration kinds this provider emits for, as it declares them.
+   *
+   * What lets the menu offer only what could produce something. Asked of the provider rather than
+   * worked out here: a host guessing that Bicep has nothing to say about a message would be a host
+   * reasoning about a target it is supposed to know nothing about.
+   */
+  readonly emits: readonly string[];
   readonly options: readonly unknown[];
 }
 
 export const describeProviders = (providers: ReadonlyMap<string, Provider>): ProviderInfo[] =>
   [...providers.values()]
-    .map((p) => ({ name: p.name, target: p.target, layouts: p.layouts, options: p.options }))
+    .map((p) => ({
+      name: p.name,
+      target: p.target,
+      layouts: p.layouts,
+      emits: p.emits,
+      options: p.options,
+    }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
 /**
