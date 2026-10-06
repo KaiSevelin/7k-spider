@@ -145,13 +145,11 @@ export function renderSaga(
 
     group.append(text(card.name, { x: card.x + 10, y: card.y + 17, class: "card-name" }, card.width - 80));
 
-    let y = card.y + 22;
-    if (card.send !== undefined) {
-      y += 19;
+    if (card.send !== undefined && card.sendY !== undefined) {
       const carries = card.carries === 0 ? "" : `  +${card.carries}`;
       const label = text(
         `send ${card.send.label}${carries}`,
-        { x: card.x + 10, y, class: "send" },
+        { x: card.x + 10, y: card.sendY, class: "send" },
         card.width - 28,
       );
       group.append(label);
@@ -240,6 +238,38 @@ export function renderSaga(
       svg.append(band);
     }
 
+    // ---- the exit rail ----------------------------------------------------
+    // One line for every way out that is not completion, running down to the terminal band. Drawn
+    // only when there is an exit, so a saga that cannot fail does not grow a rail for nothing.
+    //
+    // **Before the cards, like the spine.** A stub leaves its card's right edge and runs to the rail,
+    // and in a parallel stage the card to the right of it is in the way: drawn afterwards, the stub
+    // was painted straight through that card's rows, at almost exactly their baselines, so a sibling
+    // step's text came out struck through. The card boxes are opaque, so going under them reads as a
+    // line passing behind — which is what it does.
+    const exits = d.stages
+      .flatMap((s) => s.steps)
+      .flatMap((c) => c.outcomes.filter((o) => o.kind !== "continue").map((o) => ({ c, o })));
+    if (exits.length > 0) {
+      const rail = el("g", { class: "exits" });
+      const firstY = Math.min(...exits.map((e) => e.o.y));
+      rail.append(
+        el("line", { x1: d.exitX, y1: firstY - 4, x2: d.exitX, y2: d.terminalBand.y, class: "rail" }),
+      );
+      for (const { c, o } of exits) {
+        rail.append(
+          el("line", {
+            x1: c.x + c.width,
+            y1: o.y - 4,
+            x2: d.exitX,
+            y2: o.y - 4,
+            class: `rail-stub rail-${o.kind}`,
+          }),
+        );
+      }
+      svg.append(rail);
+    }
+
     // ---- the stages -------------------------------------------------------
     for (const stage of d.stages) {
       const group = el("g", { class: `stage${stage.parallel ? " stage-parallel" : ""}` });
@@ -276,32 +306,6 @@ export function renderSaga(
 
       for (const card of stage.steps) drawCard(group, d, card);
       svg.append(group);
-    }
-
-    // ---- the exit rail ----------------------------------------------------
-    // One line for every way out that is not completion, running down to the terminal band. Drawn
-    // only when there is an exit, so a saga that cannot fail does not grow a rail for nothing.
-    const exits = d.stages
-      .flatMap((s) => s.steps)
-      .flatMap((c) => c.outcomes.filter((o) => o.kind !== "continue").map((o) => ({ c, o })));
-    if (exits.length > 0) {
-      const rail = el("g", { class: "exits" });
-      const firstY = Math.min(...exits.map((e) => e.o.y));
-      rail.append(
-        el("line", { x1: d.exitX, y1: firstY - 4, x2: d.exitX, y2: d.terminalBand.y, class: "rail" }),
-      );
-      for (const { c, o } of exits) {
-        rail.append(
-          el("line", {
-            x1: c.x + c.width,
-            y1: o.y - 4,
-            x2: d.exitX,
-            y2: o.y - 4,
-            class: `rail-stub rail-${o.kind}`,
-          }),
-        );
-      }
-      svg.append(rail);
     }
 
     // ---- the terminal band ------------------------------------------------

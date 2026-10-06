@@ -301,6 +301,38 @@ describe.skipIf(!haveProviders)("what the menu offers", () => {
     await page.keyboard.press("Escape");
   });
 
+  /**
+   * A stub leaves its card's right edge for the exit rail, and in a parallel stage the sibling card
+   * is directly in its path. Painted after the cards it crossed their rows at almost exactly their
+   * baselines, so a step's text came out struck through by a neighbour's rail. The card boxes are
+   * opaque, so the fix is order: the rail goes under them, like the spine.
+   */
+  it("draws the exit rail under the cards it passes", async () => {
+    if (!ready || browser === undefined) return;
+    const p = await browser.newPage({ viewport: { width: 1600, height: 1200 } });
+    try {
+      await p.goto(serving!.url);
+      await p.waitForSelector("#graph");
+      await p.waitForSelector("#toggleSaga:not([hidden])");
+      await p.click("#toggleSaga");
+      await p.waitForSelector("#sagaCanvas svg .exits");
+
+      const order = await p.evaluate(() => {
+        const svg = document.querySelector("#sagaCanvas svg")!;
+        const kids = [...svg.children];
+        return {
+          exits: kids.findIndex((k) => k.classList.contains("exits")),
+          firstStage: kids.findIndex((k) => k.classList.contains("stage")),
+        };
+      });
+      expect(order.exits).toBeGreaterThanOrEqual(0);
+      expect(order.firstStage).toBeGreaterThanOrEqual(0);
+      expect(order.exits).toBeLessThan(order.firstStage);
+    } finally {
+      await p.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   it("says so plainly when a model registers no providers at all", async () => {
     if (!ready || browser === undefined) return;
 

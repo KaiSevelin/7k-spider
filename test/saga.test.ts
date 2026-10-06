@@ -488,3 +488,84 @@ describe("a saga the checker would complain about", () => {
     expect(d.height).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Rows, and the one thing a diagram may never do.
+ *
+ * Geometry is asserted sparingly in this file, on the grounds that pinning every pixel makes a layout
+ * untunable. This is the exception, because it is not a pixel — it is whether two things are legible
+ * at all. The `send` row and the first outcome were drawn on the same baseline in every card that had
+ * both, which came out as two lines of text on top of each other, and nothing here noticed because
+ * nothing here asked.
+ *
+ * It happened because the view did this one row's arithmetic itself while every other coordinate came
+ * from `layoutSaga`, and the two disagreed by exactly one row height. So the assertion is on the
+ * layout, where the answer now lives.
+ */
+describe("every row has a line to itself", () => {
+  /** Every baseline the view will draw text on, in one card, in the order it draws them. */
+  const rowsIn = (d: SagaDiagram, name: string): { y: number; what: string }[] => {
+    const c = card(d, name);
+    const rows: { y: number; what: string }[] = [];
+    if (c.sendY !== undefined) rows.push({ y: c.sendY, what: `send ${c.send?.label ?? ""}` });
+    for (const o of c.outcomes) rows.push({ y: o.y, what: o.label });
+    // The two the view positions from the bottom of the card.
+    const footY = c.y + c.height - 13;
+    if (c.undo.k !== "absent") rows.push({ y: footY, what: "undo" });
+    if (c.unbounded) rows.push({ y: footY - 19, what: "no timeout" });
+    return rows.sort((a, b) => a.y - b.y);
+  };
+
+  const names = (d: SagaDiagram): string[] => d.stages.flatMap((s) => s.steps.map((c) => c.name));
+
+  it("gives the send and the first outcome different baselines", () => {
+    const d = diagram();
+    for (const name of names(d)) {
+      const c = card(d, name);
+      if (c.sendY === undefined || c.outcomes.length === 0) continue;
+      expect(c.sendY, `${name}: send and first outcome collide`).not.toBe(c.outcomes[0]!.y);
+      expect(c.outcomes[0]!.y).toBeGreaterThan(c.sendY);
+    }
+  });
+
+  it("never puts two rows of any kind on one baseline", () => {
+    const d = diagram();
+    for (const name of names(d)) {
+      const ys = rowsIn(d, name).map((r) => r.y);
+      expect(new Set(ys).size, `${name}: ${ys.join(", ")}`).toBe(ys.length);
+    }
+  });
+
+  it("leaves a readable gap between every pair of rows", () => {
+    const d = diagram();
+    for (const name of names(d)) {
+      const rows = rowsIn(d, name);
+      for (let i = 1; i < rows.length; i++) {
+        const gap = rows[i]!.y - rows[i - 1]!.y;
+        expect(gap, `${name}: \`${rows[i - 1]!.what}\` to \`${rows[i]!.what}\``).toBeGreaterThanOrEqual(14);
+      }
+    }
+  });
+
+  it("starts the first row clear of the card's own name", () => {
+    const d = diagram();
+    for (const name of names(d)) {
+      const c = card(d, name);
+      const first = rowsIn(d, name)[0];
+      if (first === undefined) continue;
+      // The view draws the name at `card.y + 17`.
+      expect(first.y - (c.y + 17), `${name}`).toBeGreaterThanOrEqual(14);
+    }
+  });
+
+  it("keeps every row inside the card that holds it", () => {
+    const d = diagram();
+    for (const name of names(d)) {
+      const c = card(d, name);
+      for (const row of rowsIn(d, name)) {
+        expect(row.y, `${name}: \`${row.what}\` above the card`).toBeGreaterThan(c.y);
+        expect(row.y, `${name}: \`${row.what}\` below the card`).toBeLessThan(c.y + c.height);
+      }
+    }
+  });
+});

@@ -109,6 +109,14 @@ export interface StepCard {
   readonly width: number;
   readonly height: number;
   readonly send?: MessageRef;
+  /**
+   * The baseline the `send` row sits on.
+   *
+   * Here rather than worked out while drawing, like every other coordinate: the view had its own
+   * arithmetic for this one row, it disagreed with the arithmetic here by exactly one row height, and
+   * the send and the first outcome were drawn on top of each other in every card that had both.
+   */
+  readonly sendY?: number;
   /** How many fields the `send` block writes, which is what a badge on the card counts. */
   readonly carries: number;
   readonly outcomes: readonly Outcome[];
@@ -351,7 +359,13 @@ export function layoutSaga(
       const x = contentX + i * (o.cardWidth + o.cardGap);
       const { message: send, carries } = sendOf(model, step.send);
 
-      let rowY = y + 22 + (step.send === undefined ? 0 : o.rowHeight);
+      // 22 is the header the card's name sits in, so the first row of content starts one row below
+      // it. Everything after takes the next row, the `send` included — it is a row like any other and
+      // numbering it separately is what let the two disagree.
+      let rowY = y + 22 + o.rowHeight;
+      const sendY = step.send === undefined ? undefined : rowY;
+      if (step.send !== undefined) rowY += o.rowHeight;
+
       const outcomes: Outcome[] = [];
       for (const awaited of step.awaits) {
         outcomes.push(awaitOutcome(model, awaited, rowY));
@@ -368,6 +382,7 @@ export function layoutSaga(
         width: o.cardWidth,
         height,
         ...(send === undefined ? {} : { send }),
+        ...(sendY === undefined ? {} : { sendY }),
         carries,
         outcomes,
         undo: undoOf(model, step),
