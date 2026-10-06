@@ -539,6 +539,14 @@
         cursor: pointer;
       }
       #menu button:hover { background: var(--package); }
+      /* Offered but not available: still listed, because which providers a model has is worth knowing
+         even when none of them can run, and the row says why instead of making you click to find out. */
+      #menu button[disabled] {
+        color: var(--ink-dim);
+        cursor: default;
+      }
+      #menu button[disabled]:hover { background: none; }
+      #menu button[disabled] i { color: var(--warn); }
       #menu button i,
       #menu > i {
         display: block;

@@ -17,6 +17,7 @@
  * rather than as a failing check.
  */
 
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -184,4 +185,137 @@ describe.skipIf(!haveProviders)("the generated-code drawer", () => {
     expect(await page.locator("#preview").isVisible()).toBe(true);
     expect(await cards(page).count()).toBe(before);
   });
+});
+
+describe.skipIf(!haveProviders)("what the menu offers", () => {
+  /**
+   * A throwaway model, inside the repository.
+   *
+   * It has to be inside it: a provider is resolved by walking up from the model's own directory, so a
+   * fixture in the system temp directory sees no `node_modules`, registers nothing, and would have the
+   * menu empty for a reason that has nothing to do with what is being tested. `.scratch/` is already
+   * gitignored.
+   */
+  const fixture = async (files: Readonly<Record<string, string>>): Promise<string> => {
+    await mkdir(join(root, ".scratch"), { recursive: true });
+    const dir = await mkdtemp(join(root, ".scratch", "menu-"));
+    for (const [name, text] of Object.entries(files)) {
+      await mkdir(dirname(join(dir, name)), { recursive: true });
+      await writeFile(join(dir, name), text, "utf-8");
+    }
+    return dir;
+  };
+
+  /** Right-clicks the graph background and hands back the menu's rows. */
+  const rowsOf = async (p: Page) => {
+    const box = await p.locator("#graph").boundingBox();
+    if (box === null) throw new Error("no graph to right-click");
+    await p.mouse.click(box.x + 12, box.y + 12, { button: "right" });
+    await p.waitForSelector("#menu:not([hidden])");
+    return p.locator("#menu button");
+  };
+
+  it("offers every provider as a live choice when the model checks out", async () => {
+    if (!ready || page === undefined) return;
+    await page.keyboard.press("Escape");
+    const rows = await rowsOf(page);
+    // Four providers plus `generate everything`.
+    expect(await rows.count()).toBe(5);
+    expect(await rows.locator("[disabled]").count()).toBe(0);
+    for (let i = 0; i < 5; i++) expect(await rows.nth(i).isDisabled()).toBe(false);
+    await page.keyboard.press("Escape");
+  });
+
+  /**
+   * A model with an error cannot produce anything: the run refuses it before a provider is asked.
+   * So the rows are listed \u2014 which targets the model has is still worth knowing \u2014 and greyed.
+   */
+  it("greys every choice, with the reason, when the model does not check out", async () => {
+    if (!ready || browser === undefined) return;
+
+    // `Nope` is declared nowhere, which is an `unresolved-reference` error.
+    const dir = await fixture({
+      "broken.7k": [
+        "package broken",
+        "",
+        "message Ask v1.0 @command { id: uuid @role(businessKey); what: Nope }",
+        "",
+        "pipe inbound : queue { }",
+        "",
+        "service Desk {",
+        "  reacts Ask from inbound { replies none }",
+        "}",
+        "",
+      ].join("\n"),
+      ".7k/build.json": JSON.stringify(
+        {
+          out: "generated",
+          providers: ["@sevenk/csharp", "@sevenk/node"],
+          emit: [
+            { provider: "csharp", out: "csharp", options: { namespace: "Broken" } },
+            { provider: "node", out: "ts" },
+          ],
+        },
+        null,
+        2,
+      ),
+    });
+
+    const other = await serve({ paths: [dir], port: 0, watch: false });
+    const broken = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    try {
+      await broken.goto(other.url);
+      await broken.waitForSelector("#graph");
+      // The page has to have heard about the diagnostics before the menu can know.
+      await broken.waitForFunction(
+        () => (document.getElementById("problemsCount")?.textContent ?? "").length > 0,
+      );
+
+      const rows = await rowsOf(broken);
+      expect(await rows.count()).toBe(3); // two providers, plus `generate everything`
+      for (let i = 0; i < 3; i++) {
+        expect(await rows.nth(i).isDisabled()).toBe(true);
+        expect(await rows.nth(i).locator("i").textContent()).toBe("the model does not check out");
+      }
+    } finally {
+      await broken.close().catch(() => undefined);
+      await other.close().catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("says so plainly when a model registers no providers at all", async () => {
+    if (!ready || browser === undefined) return;
+
+    const dir = await fixture({
+      "bare.7k": [
+        "package bare",
+        "",
+        "message Ask v1.0 @command { id: uuid @role(businessKey) }",
+        "",
+        "pipe inbound : queue { }",
+        "",
+        "service Desk {",
+        "  reacts Ask from inbound { replies none }",
+        "}",
+        "",
+      ].join("\n"),
+    });
+
+    const other = await serve({ paths: [dir], port: 0, watch: false });
+    const bare = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    try {
+      await bare.goto(other.url);
+      await bare.waitForSelector("#graph");
+      const box = await bare.locator("#graph").boundingBox();
+      await bare.mouse.click(box!.x + 12, box!.y + 12, { button: "right" });
+      await bare.waitForSelector("#menu:not([hidden])");
+      expect(await bare.locator("#menu button").count()).toBe(0);
+      expect(await bare.locator("#menu > i").textContent()).toContain("no providers registered");
+    } finally {
+      await bare.close().catch(() => undefined);
+      await other.close().catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

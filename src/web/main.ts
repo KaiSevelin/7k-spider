@@ -1001,13 +1001,30 @@ function openMenu(
     rows.push(empty);
   }
 
+  // Why nothing can be generated, if nothing can. The providers are still listed when there is one:
+  // which targets a model has is worth knowing even when none of them can run just now, and a row
+  // that says why is better than a row that looks ready and then does nothing.
+  const blocked = cannotGenerate();
+
   for (const provider of providers) {
     rows.push(
-      item(`generate ${provider.name}`, provider.target, () => void generate(only, label, provider.name)),
+      item(
+        `generate ${provider.name}`,
+        provider.target,
+        () => void generate(only, label, provider.name),
+        blocked,
+      ),
     );
   }
   if (providers.length > 1) {
-    rows.push(item("generate everything", "every provider in the manifest", () => void generate(only, label)));
+    rows.push(
+      item(
+        "generate everything",
+        "every provider in the manifest",
+        () => void generate(only, label),
+        blocked,
+      ),
+    );
   }
 
   menu.replaceChildren(...rows);
@@ -1022,14 +1039,38 @@ function openMenu(
   menu.style.top = `${Math.max(0, Math.min(y, main.height - box.height - 8))}px`;
 }
 
-function item(label: string, hint: string, go: () => void): HTMLElement {
+/**
+ * Why generating would produce nothing, or `undefined` when it would not.
+ *
+ * Only what is known here for certain. A model with an error is refused by the run itself — `planFor`
+ * answers "the model does not check out, so nothing was generated" before a provider is asked — so
+ * offering it as a live choice is offering something that cannot happen.
+ *
+ * What this deliberately does *not* try to know is whether a particular provider emits anything for a
+ * particular selection. Only the provider knows that, finding out costs a whole plan, and a menu that
+ * went away to ask would either be slow or grey a row after the pointer was already on it. That case
+ * stays where it is: the run says `nothing to generate — no provider emits for it`, after the fact and
+ * in one line.
+ */
+function cannotGenerate(): string | undefined {
+  if (lastDiagnostics.some((d) => d.severity === "error")) return "the model does not check out";
+  return undefined;
+}
+
+function item(label: string, hint: string, go: () => void, blocked?: string): HTMLElement {
   const button = document.createElement("button");
   button.type = "button";
   const name = document.createElement("span");
   name.textContent = label;
   const note = document.createElement("i");
-  note.textContent = hint;
+  // The reason replaces the hint rather than joining it: the hint says what the row would do, and
+  // what it would do is no longer the thing worth reading.
+  note.textContent = blocked ?? hint;
   button.append(name, note);
+  if (blocked !== undefined) {
+    button.disabled = true;
+    return button;
+  }
   button.addEventListener("click", () => {
     closeMenu();
     go();
