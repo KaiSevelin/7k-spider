@@ -14,7 +14,16 @@ import { blank, type Field, type Form } from "../compose.js";
 export interface FormRender {
   /** Problems by path, so each field can show what is wrong with it. */
   readonly problems: ReadonlyMap<string, readonly string[]>;
-  readonly onChange: () => void;
+  /**
+   * An edit happened.
+   *
+   * `structural` is true only when the *shape* of the form changed — a list item added or removed, a
+   * map key added or renamed — and is what tells the caller it has to build the nodes again. Typing a
+   * character does not: it was rebuilding the whole form on every keystroke, which replaced the very
+   * input being typed into, so focus fell back to the page and the next letter was read as a shortcut.
+   * One character went in and the rest opened panels.
+   */
+  readonly onChange: (structural?: boolean) => void;
 }
 
 const tag = <K extends keyof HTMLElementTagNameMap>(
@@ -92,18 +101,40 @@ function problemsFor(render: FormRender, path: string): readonly string[] {
 }
 
 function decorate(wrap: HTMLElement, field: Field, path: string, render: FormRender): void {
-  const bad = problemsFor(render, path);
+  // What `repaint` needs to do this again without the `Field`, so marking a form as wrong never means
+  // building it again.
+  wrap.dataset["path"] = path;
+  if (field.hint !== undefined) wrap.dataset["hint"] = field.hint;
+  paint(wrap, problemsFor(render, path));
+}
+
+/** The part of a field that changes as you type: the mark, the hint, the messages. */
+function paint(wrap: HTMLElement, bad: readonly string[]): void {
+  for (const old of wrap.querySelectorAll(":scope > .hint, :scope > .bad")) old.remove();
   wrap.classList.toggle("invalid", bad.length > 0);
 
-  if (field.hint !== undefined && bad.length === 0) {
-    const hint = tag("div", "hint");
-    hint.textContent = field.hint;
-    wrap.append(hint);
+  const hint = wrap.dataset["hint"];
+  if (hint !== undefined && bad.length === 0) {
+    const node = tag("div", "hint");
+    node.textContent = hint;
+    wrap.append(node);
   }
   for (const message of bad) {
     const line = tag("div", "bad");
     line.textContent = message;
     wrap.append(line);
+  }
+}
+
+/**
+ * Re-marks what is wrong, in the nodes that are already there.
+ *
+ * The whole point: validation stays live on every keystroke, and the input you are typing into is the
+ * same element afterwards, so it keeps focus and its caret. Only a change of shape rebuilds.
+ */
+export function refreshProblems(container: HTMLElement, render: FormRender): void {
+  for (const wrap of container.querySelectorAll<HTMLElement>("[data-path]")) {
+    paint(wrap, problemsFor(render, wrap.dataset["path"] ?? ""));
   }
 }
 
@@ -222,7 +253,7 @@ function listNode(
     remove.title = "remove";
     remove.addEventListener("click", () => {
       items.splice(i, 1);
-      render.onChange();
+      render.onChange(true);
     });
     row.append(inner, remove);
     group.append(row);
@@ -234,7 +265,7 @@ function listNode(
   add.addEventListener("click", () => {
     items.push(field.fields === undefined ? "" : blank(field.fields));
     write(payload, path, items as JsonValue);
-    render.onChange();
+    render.onChange(true);
   });
   group.append(add);
 
@@ -274,9 +305,12 @@ function dictionaryNode(
       ? Object.entries(current as Record<string, JsonValue>)
       : [];
 
+  // Structural, and safely so: these inputs commit on `change`, which fires when they lose focus, so
+  // rebuilding here cannot take the field out from under somebody mid-word. A map's keys *are* its
+  // shape — renaming one is not the same kind of edit as typing into a declared field.
   const commit = (pairs: [string, JsonValue][]): void => {
     write(payload, path, Object.fromEntries(pairs.filter(([k]) => k !== "")) as JsonValue);
-    render.onChange();
+    render.onChange(true);
   };
 
   entries.forEach(([k, v], i) => {

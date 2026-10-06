@@ -62,7 +62,7 @@ import {
   type Form,
   type Forms,
 } from "../compose.js";
-import { renderForm } from "./compose-ui.js";
+import { refreshProblems, renderForm } from "./compose-ui.js";
 import { candidates, pairFor, previewOf, roleOf, type Pair, type Preview } from "./connect-ui.js";
 import {
   parseLayout,
@@ -1572,7 +1572,7 @@ function fillComposable(): void {
 }
 
 /** Validates what has been typed and redraws the form, so every problem sits beside its own field. */
-function recheck(): void {
+function recheck(structural = false): void {
   if (model === undefined || composing === undefined) return;
 
   const decl = model.decls.find(
@@ -1600,7 +1600,11 @@ function recheck(): void {
   composeOut.textContent =
     result.canonical ?? (byPath.get("")?.join("\n") ?? "fill in the fields above");
 
-  renderForm(el("composeForm"), composing, payload, { problems: byPath, onChange: recheck });
+  // Only when the shape changed. Typing re-marks what is wrong in the nodes already on the page, so
+  // the input under the cursor is the same element afterwards and keeps both the focus and the caret.
+  const render = { problems: byPath, onChange: recheck };
+  if (structural) renderForm(el("composeForm"), composing, payload, render);
+  else refreshProblems(el("composeForm"), render);
 }
 
 function startComposing(): void {
@@ -1612,7 +1616,8 @@ function startComposing(): void {
   composing = formOf(model, decl, forms);
   // Blank, not invented: a form filled with plausible values is one you stop reading.
   payload = blank(composing.fields);
-  recheck();
+  // Structural: there is no form on the page yet to repaint.
+  recheck(true);
 }
 
 function toggleCompose(force?: boolean): void {
@@ -1624,6 +1629,7 @@ function toggleCompose(force?: boolean): void {
     toggleSequence(false);
     toggleSaga(false);
     if (composing === undefined) startComposing();
+    // The nodes were left in place when the drawer was shut, so this only re-marks them.
     else recheck();
   }
 }
@@ -2214,6 +2220,20 @@ for (const id of ["packages", "dead"]) {
   });
 }
 
+/**
+ * Whether a key belongs to what has focus rather than to the page.
+ *
+ * Asked by capability rather than by listing the tags that happen to exist today: the last version
+ * named `input` and `select`, the composer grew a `textarea`, and every one-letter shortcut fired
+ * while somebody was typing into it. `isContentEditable` is in here for the same reason, before
+ * anything in this page becomes one.
+ */
+const typingInto = (target: EventTarget | null): boolean =>
+  target instanceof HTMLInputElement ||
+  target instanceof HTMLTextAreaElement ||
+  target instanceof HTMLSelectElement ||
+  (target instanceof HTMLElement && target.isContentEditable);
+
 document.addEventListener("keydown", (e) => {
   // Ctrl-K reaches the palette from anywhere, including from inside the palette, where it closes it.
   if (e.key === "k" && (e.ctrlKey || e.metaKey)) {
@@ -2223,7 +2243,10 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
+  // Everything below is a single letter, so anything that takes typing must swallow it first. A
+  // `textarea` was missing from this list, which is why typing a message body in the composer played
+  // the trace on a space, opened the data view on a `d`, and shut the composer on a `c`.
+  if (typingInto(e.target)) return;
 
   // `/` as well, because it costs nothing and half the world's tools use it.
   if (e.key === "/") {
