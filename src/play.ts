@@ -38,7 +38,14 @@ export interface PlanOptions {
   readonly gapMs?: number;
 }
 
-export const DEFAULT_BEAT_MS = 420;
+/**
+ * Wall milliseconds per event.
+ *
+ * Paced for reading rather than for getting to the end: each beat carries a dot crossing an edge and
+ * a sentence to read, and 420ms was enough for neither. The speed picker still goes faster, and a
+ * reader who wants the whole run at once has `8x`.
+ */
+export const DEFAULT_BEAT_MS = 700;
 export const DEFAULT_GAP_MS = 1000;
 
 /**

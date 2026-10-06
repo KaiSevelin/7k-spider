@@ -49,6 +49,19 @@ export interface RenderOptions {
   readonly onMoved?: (positions: Readonly<Record<SelectionId, Point>>) => void;
   /** Positions from `layout.json`. A node that has one is placed there and does not move. */
   readonly saved?: Readonly<Record<SelectionId, Point>>;
+  /**
+   * Called on a right click, with what it was on and what is currently marked.
+   *
+   * `id` is the node under the pointer, absent on the background. `marked` is the multi-selection, which
+   * is a different thing from Spider's single selection on purpose: the selection drives the sidebar and
+   * the sequence, and changing it to mean "several" would have changed every view that reads it. Marking
+   * is additive, visible, and means only "these ones, for the next thing I do".
+   */
+  readonly onContext?: (
+    at: { readonly id?: SelectionId; readonly marked: readonly SelectionId[] },
+    /** Where the pointer was, in client coordinates. The host decides what that means on its page. */
+    at_page: { readonly x: number; readonly y: number },
+  ) => void;
 }
 
 /** What a message looks like going past. */
@@ -75,8 +88,69 @@ export interface Rendered {
   setSaved(saved: Readonly<Record<SelectionId, Point>>): void;
   /** Every node's position now, which is what a `layout.json` write is made of. */
   positions(): Readonly<Record<SelectionId, Point>>;
+  /** Re-reads the palette and restyles, for when the host's colour scheme changes under us. */
+  retheme(): void;
+  /** The multi-selection, in the order it was built. */
+  marked(): readonly SelectionId[];
+  /** Replaces it. Anything the graph does not draw is dropped, so a stale id cannot linger. */
+  setMarked(ids: readonly SelectionId[]): void;
   destroy(): void;
 }
+
+/**
+ * Resolves the `var(--x)` in the stylesheet to the literal values Cytoscape can actually parse.
+ *
+ * Cytoscape has its own style language and no part of CSS behind it, so `var(--service)` reaches its
+ * colour parser as that string, fails to parse, and is dropped with a warning — leaving the element on
+ * Cytoscape's *own* defaults, which are a grey box with a black border and a black label on a black
+ * label background. The page then looks nothing like the palette beside it, and nothing says so except
+ * the console.
+ *
+ * Resolving against an element rather than against a hard-coded table is what keeps this host-agnostic
+ * (D92): the variables are inherited, so a VS Code webview that defines the same names gets the same
+ * drawing with no second palette to keep in step.
+ *
+ * A name the host does not define is left out rather than resolved to an empty string, so Cytoscape
+ * falls back to its default for that one property instead of rejecting the rule.
+ */
+export function resolveStyle(
+  style: cytoscape.StylesheetJson,
+  look: (name: string) => string | undefined,
+): cytoscape.StylesheetJson {
+  const resolved: cytoscape.StylesheetJson = [];
+  for (const rule of style) {
+    // A stylesheet block may carry its properties under `css` instead; ours do not, and one that does
+    // is passed through rather than guessed at.
+    if (!("style" in rule)) {
+      resolved.push(rule);
+      continue;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [prop, value] of Object.entries(rule.style as Record<string, unknown>)) {
+      if (typeof value !== "string" || !value.includes("var(")) {
+        out[prop] = value;
+        continue;
+      }
+      let missing = false;
+      const text = value.replace(/var\(\s*(--[\w-]+)\s*\)/g, (_whole, name: string) => {
+        const found = look(name);
+        if (found === undefined || found === "") missing = true;
+        return found ?? "";
+      });
+      if (!missing) out[prop] = text;
+    }
+    resolved.push({ ...rule, style: out } as cytoscape.StylesheetJson[number]);
+  }
+  return resolved;
+}
+
+/** The palette as the page sees it, read off whatever element the graph is drawn into. */
+const paletteOf =
+  (el: Element) =>
+  (name: string): string | undefined => {
+    const value = getComputedStyle(el).getPropertyValue(name).trim();
+    return value === "" ? undefined : value;
+  };
 
 /**
  * A pipe's shape says what kind it is.
@@ -247,7 +321,10 @@ export const STYLE: cytoscape.StylesheetJson = [
       "target-arrow-color": "var(--line)",
       "target-arrow-shape": "triangle",
       "arrow-scale": 0.9,
-      label: "data(label)",
+      // No label by default. The messages are the bulk of the ink on any real model — a dozen edges
+      // around one pipe, each carrying several — and they are also wanted one edge at a time rather
+      // than all at once. So hovering shows them, and the canvas draws them only where a selection has
+      // already said which edge is the interesting one.
       "font-family": "var(--mono)",
       "font-size": 10,
       color: "var(--ink-dim)",
@@ -292,8 +369,9 @@ export const STYLE: cytoscape.StylesheetJson = [
     selector: "node.marker",
     style: {
       shape: "ellipse",
-      width: 11,
-      height: 11,
+      // Small: it marks a message, and a dot that reads as a node is a dot that competes with them.
+      width: 8,
+      height: 8,
       label: "",
       "background-color": "var(--accent)",
       "border-width": 0,
@@ -303,6 +381,18 @@ export const STYLE: cytoscape.StylesheetJson = [
   },
   { selector: "node.marker.bad", style: { "background-color": "var(--warn)" } },
 
+  {
+    // Marking is shown as a dashed accent outline: present enough to count them at a glance, and
+    // distinct from `.emphasised`, which means something else entirely.
+    selector: "node.marked",
+    style: {
+      "border-color": "var(--accent)",
+      "border-width": 3,
+      "border-style": "dashed",
+      "z-index": 9,
+    },
+  },
+
   // Dimming is a class on everything else rather than a style on the selection, so that an empty
   // highlight leaves the graph at full strength instead of dimming all of it.
   { selector: ".dimmed", style: { opacity: 0.22 } },
@@ -310,7 +400,18 @@ export const STYLE: cytoscape.StylesheetJson = [
     selector: ".emphasised",
     style: { "border-color": "var(--accent)", "border-width": 3, "z-index": 10 },
   },
-  { selector: "edge.emphasised", style: { "line-color": "var(--accent)", "target-arrow-color": "var(--accent)", width: 2.4 } },
+  {
+    // A selected edge says what it carries without being hovered: the reader already named it, and
+    // having to hover the thing you just clicked is a poor answer.
+    selector: "edge.emphasised",
+    style: {
+      "line-color": "var(--accent)",
+      "target-arrow-color": "var(--accent)",
+      width: 2.4,
+      label: "data(label)",
+      color: "var(--ink)",
+    },
+  },
 ];
 
 export function renderGraph(
@@ -323,12 +424,74 @@ export function renderGraph(
   const cy = cytoscape({
     container,
     elements: elementsOf(graph),
-    style: STYLE,
+    style: resolveStyle(STYLE, paletteOf(container)),
     // Draggable only when the host can persist where it lands: a drag that silently reverts on the next
     // keystroke is worse than one that was never offered.
     autoungrabify: options.onMoved === undefined,
     wheelSensitivity: 0.2,
   });
+
+  /**
+   * What a hovered edge carries.
+   *
+   * Lives beside the canvas rather than being handed to the host through a callback: placing it needs
+   * Cytoscape's *rendered* coordinates, and a host that had to be told about those would be coupled to
+   * the drawing library this file exists to keep to itself (D92). It is styled by class, so a host that
+   * wants it to look different still can.
+   */
+  const tip = document.createElement("div");
+  tip.className = "graphTip";
+  tip.hidden = true;
+  container.appendChild(tip);
+
+  const describe = (edge: cytoscape.EdgeSingular): HTMLElement[] => {
+    const messages = (edge.data("messages") as readonly string[] | undefined) ?? [];
+    // `emits` points at a pipe and `reacts` away from one, so which end is the pipe depends on which.
+    const emits = edge.data("direction") === "emits";
+    const pipe = (emits ? edge.target() : edge.source()).data("label") as string;
+
+    const head = document.createElement("b");
+    head.textContent = emits ? `emits to ${pipe}` : `reacts from ${pipe}`;
+
+    const list = document.createElement("ul");
+    for (const message of messages) {
+      const item = document.createElement("li");
+      item.textContent = message;
+      list.append(item);
+    }
+
+    const notes: HTMLElement[] = [];
+    const note = (text: string): void => {
+      const line = document.createElement("i");
+      line.textContent = text;
+      notes.push(line);
+    };
+    const subscription = edge.data("subscription") as string | undefined;
+    if (subscription !== undefined) note(`subscription ${subscription}`);
+    if (edge.data("bestEffort") === "yes") note("best-effort: may never be published");
+    if (edge.data("incomplete") === "yes") note("declared where nothing reads it");
+
+    return [head, list, ...notes];
+  };
+
+  const hideTip = (): void => {
+    tip.hidden = true;
+  };
+
+  const showTip = (edge: cytoscape.EdgeSingular): void => {
+    tip.replaceChildren(...describe(edge));
+    const at = edge.renderedMidpoint();
+    tip.style.left = `${at.x}px`;
+    tip.style.top = `${at.y}px`;
+    tip.hidden = false;
+  };
+
+  cy.on("mouseover", "edge", (e) => showTip(e.target as cytoscape.EdgeSingular));
+  cy.on("mouseout", "edge", hideTip);
+  // Anything that moves the drawing under the pointer invalidates where this was put. Hidden rather
+  // than followed, because a tooltip chasing a pan is harder to read than one that waits to be asked
+  // again.
+  cy.on("pan zoom drag", hideTip);
 
   let saved: Readonly<Record<SelectionId, Point>> = options.saved ?? {};
 
@@ -373,9 +536,62 @@ export function renderGraph(
     });
   }
 
+  /**
+   * The multi-selection.
+   *
+   * Ctrl, Cmd or Shift and a click adds or removes. Deliberately separate from `onSelect`: one thing
+   * being *selected* is what the sidebar and the sequence diagram read, and a second concept is cheaper
+   * than teaching all of them to mean "possibly several".
+   */
+  const marked = new Set<SelectionId>();
+
+  const remark = (): void => {
+    cy.batch(() => {
+      cy.nodes().removeClass("marked");
+      for (const id of marked) cy.getElementById(id).addClass("marked");
+    });
+  };
+
+  const toggleMark = (id: SelectionId): void => {
+    if (marked.has(id)) marked.delete(id);
+    else marked.add(id);
+    remark();
+  };
+
+  /** Where a Cytoscape event happened on the page, which is what a menu needs. */
+  const pointer = (e: unknown): { x: number; y: number } => {
+    const native = (e as { originalEvent?: MouseEvent }).originalEvent;
+    return { x: native?.clientX ?? 0, y: native?.clientY ?? 0 };
+  };
+
+  // A right click is not a selection: it asks about something without changing what is selected, which
+  // is what lets "generate for these three" work without the sidebar jumping somewhere else.
+  if (options.onContext !== undefined) {
+    const onContext = options.onContext;
+    container.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    cy.on("cxttap", "node", (e) => {
+      const id = e.target.id() as SelectionId;
+      onContext({ id, marked: [...marked] }, pointer(e));
+    });
+
+    cy.on("cxttap", (e) => {
+      if (e.target !== cy) return;
+      onContext({ marked: [...marked] }, pointer(e));
+    });
+  }
+
   if (options.onSelect !== undefined) {
     const onSelect = options.onSelect;
-    cy.on("tap", "node, edge", (e) => onSelect(e.target.id() as SelectionId));
+    cy.on("tap", "node, edge", (e) => {
+      // Marking is the modified click, so an ordinary one still means what it always did.
+      const native = (e as unknown as { originalEvent?: MouseEvent }).originalEvent;
+      if (native?.ctrlKey === true || native?.metaKey === true || native?.shiftKey === true) {
+        if (e.target.isNode() === true) toggleMark(e.target.id() as SelectionId);
+        return;
+      }
+      onSelect(e.target.id() as SelectionId);
+    });
     cy.on("tap", (e) => {
       if (e.target === cy) onSelect(undefined);
     });
@@ -490,6 +706,15 @@ export function renderGraph(
     highlight,
     send,
     clearSends,
+    retheme() {
+      cy.style(resolveStyle(STYLE, paletteOf(container)) as never);
+    },
+    marked: () => [...marked],
+    setMarked(ids) {
+      marked.clear();
+      for (const id of ids) if (cy.getElementById(id).nonempty()) marked.add(id);
+      remark();
+    },
     update(next) {
       // Nothing in flight survives a redraw: a marker left behind would be a message that never arrived.
       clearSends();
@@ -497,6 +722,7 @@ export function renderGraph(
       // which is deterministic, so an unchanged part of the model lands where it was.
       const pan = cy.pan();
       const zoom = cy.zoom();
+      const wasMarked = [...marked];
       cy.batch(() => {
         cy.elements().remove();
         cy.add(elementsOf(next));
@@ -506,6 +732,11 @@ export function renderGraph(
       layout.run();
       cy.pan(pan);
       cy.zoom(zoom);
+      // A mark is about a declaration, and a declaration survives a redraw. Anything the new graph no
+      // longer draws is dropped rather than kept as an id nobody can see.
+      marked.clear();
+      for (const id of wasMarked) if (cy.getElementById(id).nonempty()) marked.add(id);
+      remark();
     },
     setSaved(next) {
       saved = next;
@@ -520,7 +751,10 @@ export function renderGraph(
       });
       return out;
     },
-    destroy: () => cy.destroy(),
+    destroy: () => {
+      tip.remove();
+      cy.destroy();
+    },
   };
 }
 
@@ -529,3 +763,162 @@ export const nodeFor = (graph: Graph, id: SelectionId): GraphNode | undefined =>
   graph.nodes.find((n) => n.id === id);
 
 export type { NodeSingular };
+
+/**
+ * A row of the legend: one thing the drawing can show, and what it means.
+ *
+ * Data rather than a drawn picture, because the drawing is done by the *same* stylesheet the graph
+ * uses. A legend that restated the shapes in its own markup would be a second opinion about what a
+ * topic looks like, and the two would drift the first time one of them changed.
+ */
+export interface LegendRow {
+  /** What this row means, in the reader's words. */
+  readonly what: string;
+  /** The classes the graph would give it, so the swatch is styled by the rules the canvas uses. */
+  readonly classes?: string;
+  /** Data the `[attr = "yes"]` rules select on. */
+  readonly data?: Readonly<Record<string, string>>;
+  /** Set where the row shows a line style rather than a shape. */
+  readonly edge?: { readonly classes?: string; readonly data?: Readonly<Record<string, string>> };
+}
+
+export const LEGEND: readonly LegendRow[] = [
+  { what: "a service", classes: "service" },
+  {
+    what: "a service outside this model: @external, so 7K describes none of its behaviour",
+    classes: "external",
+  },
+  { what: "a queue: consumers compete, and each message goes to one of them", classes: "pipe kind-queue" },
+  { what: "a topic: every subscriber gets its own copy", classes: "pipe kind-topic" },
+  { what: "a stream: a log that can be read again from the start", classes: "pipe kind-stream" },
+  {
+    what: "a port: everything outside the view that connects here, gathered into one stub",
+    classes: "port",
+  },
+  { what: "a dead letter: a pipe's implicit companion, where its failures go", classes: "dead-letter" },
+  { what: "a package", classes: "package" },
+  { what: "at the system boundary", classes: "pipe kind-queue", data: { boundary: "yes" } },
+  {
+    what: "at-most-once: a message that was sent may still be lost",
+    classes: "pipe kind-queue",
+    data: { lossy: "yes" },
+  },
+  {
+    what: "a name that does not resolve, which is normal while a model is half-written",
+    classes: "service",
+    data: { incomplete: "yes" },
+  },
+  { what: "a message flows this way", edge: {} },
+  { what: "best-effort: the message may never be published at all", edge: { data: { bestEffort: "yes" } } },
+  { what: "an edge naming something that does not resolve", edge: { data: { incomplete: "yes" } } },
+];
+
+/** How far apart the rows sit. Fixed, because a legend is a column and not a graph. */
+const LEGEND_ROW = 34;
+/** Half the swatch's width: a shape row and a line row then span the same place. */
+const LEGEND_HALF = 23;
+
+/**
+ * What the legend adds to the graph's own stylesheet.
+ *
+ * Only geometry and where the text goes. Every colour, shape and border still comes from the rules
+ * above, which is the whole point: the swatch is not a picture *of* a topic, it is a topic.
+ */
+const LEGEND_STYLE: cytoscape.StylesheetJson = [
+  {
+    selector: "node.legendItem",
+    style: {
+      width: LEGEND_HALF * 2,
+      height: 24,
+      padding: "0px",
+      label: "data(label)",
+      "text-halign": "right",
+      "text-valign": "center",
+      "text-margin-x": 10,
+      "font-size": 11,
+      color: "var(--ink)",
+      "text-wrap": "wrap",
+      "text-max-width": "300px",
+    },
+  },
+  {
+    // The far end of a line row: carries the explanation and draws nothing of its own.
+    selector: "node.legendText",
+    style: {
+      width: 1,
+      height: 1,
+      padding: "0px",
+      "background-opacity": 0,
+      "border-width": 0,
+      label: "data(label)",
+      "text-halign": "right",
+      "text-valign": "center",
+      "text-margin-x": 10,
+      "font-size": 11,
+      color: "var(--ink)",
+      "text-wrap": "wrap",
+      "text-max-width": "300px",
+    },
+  },
+  {
+    selector: "node.legendEnd",
+    style: {
+      width: 1,
+      height: 1,
+      padding: "0px",
+      "background-opacity": 0,
+      "border-width": 0,
+      label: "",
+    },
+  },
+];
+
+/** The legend's elements, one row per entry, at fixed positions. */
+export const legendElements = (): ElementDefinition[] => {
+  const out: ElementDefinition[] = [];
+  LEGEND.forEach((row, i) => {
+    const y = i * LEGEND_ROW;
+    if (row.edge === undefined) {
+      out.push({
+        data: { id: `legend${i}`, label: row.what, ...row.data },
+        position: { x: 0, y },
+        classes: `${row.classes ?? ""} legendItem`.trim(),
+      });
+      return;
+    }
+    out.push({ data: { id: `legend${i}from` }, position: { x: -LEGEND_HALF, y }, classes: "legendEnd" });
+    out.push({
+      data: { id: `legend${i}to`, label: row.what },
+      position: { x: LEGEND_HALF, y },
+      classes: "legendText",
+    });
+    out.push({
+      data: { id: `legend${i}edge`, source: `legend${i}from`, target: `legend${i}to`, ...row.edge.data },
+      ...(row.edge.classes === undefined ? {} : { classes: row.edge.classes }),
+    });
+  });
+  return out;
+};
+
+/**
+ * Draws the legend into an element.
+ *
+ * A second Cytoscape instance rather than markup, so every swatch is drawn by the rules the graph is
+ * drawn by. Nothing here can be dragged, panned or zoomed: it is a key, not a view.
+ */
+export function renderLegend(container: HTMLElement): { destroy(): void } {
+  register();
+  const cy = cytoscape({
+    container,
+    elements: legendElements(),
+    style: resolveStyle([...STYLE, ...LEGEND_STYLE], paletteOf(container)),
+    layout: { name: "preset" },
+    userZoomingEnabled: false,
+    userPanningEnabled: false,
+    boxSelectionEnabled: false,
+    autoungrabify: true,
+    autolock: true,
+  });
+  cy.fit(undefined, 10);
+  return { destroy: () => cy.destroy() };
+}
