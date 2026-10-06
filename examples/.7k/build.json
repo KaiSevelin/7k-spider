@@ -1,0 +1,41 @@
+{
+  "// why": "The providers Spider offers for this model. Spider reads `providers` to know what to put in the Generate menu; it never writes any of this to disk — `7k generate` is the only writer. `out` is still here because the artifacts are shown with the paths a real run would give them, so what you read in the document view is what the CLI would put on disk.",
+  "out": "generated",
+  "providers": [
+    "@sevenk/csharp",
+    "@sevenk/sqlserver",
+    "@sevenk/bicep",
+    "@sevenk/node"
+  ],
+  "emit": [
+    {
+      "// why": "Per-declaration, because that is how C# is normally laid out and it makes the document view one card per type.",
+      "provider": "csharp",
+      "out": "csharp",
+      "layout": "per-declaration",
+      "options": {
+        "namespace": "Acme.Parcels"
+      }
+    },
+    {
+      "// why": "The data layer only. A pipe's guarantee is not a table, and this provider refuses rather than approximating one.",
+      "provider": "sqlserver",
+      "out": "sql",
+      "layout": "per-package",
+      "options": {
+        "schema": "parcels"
+      }
+    },
+    {
+      "// why": "The topology layer only, as Azure Service Bus. Per package, because that is the unit somebody deploys.",
+      "provider": "bicep",
+      "out": "azure",
+      "layout": "per-package"
+    },
+    {
+      "provider": "node",
+      "out": "ts",
+      "layout": "per-package"
+    }
+  ]
+}

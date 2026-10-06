@@ -69,7 +69,11 @@ export async function providersFor(
   // turn need not agree about versions. Until this used `createRequire`, a bare specifier resolved
   // against Spider's own `node_modules` — so a provider a model registered was not found at all, and
   // the comment that used to sit here claimed otherwise.
-  const requireFrom = createRequire(joinPath(root, "7k.local"));
+  // `resolvePath` rather than `joinPath`, because `createRequire` demands an absolute path and the
+  // root arrives as the reader typed it — `spider serve examples` makes it relative, and that threw
+  // rather than resolving. It only ever threw once a model registered providers at all, so a model
+  // without a manifest hid it.
+  const requireFrom = createRequire(resolvePath(root, "7k.local"));
   const { providers, problems } = await loadProviders(names, async (specifier) => {
     const from = specifier.startsWith(".")
       ? resolvePath(root, specifier)

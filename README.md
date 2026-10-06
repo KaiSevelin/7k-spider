@@ -23,6 +23,17 @@ Then open http://127.0.0.1:7007. See [examples/README.md](examples/README.md) fo
 with breakpoints working in `src/` without a build step. `Spider: demo, debugging the page` does the same
 and attaches to the browser too, so breakpoints in `src/web/` work as well.
 
+The demo comes with **four providers registered** — C#, SQL Server, Bicep and TypeScript — so *Generate*
+has something in it. They are named in [`examples/.7k/build.json`](examples/.7k/build.json), which is
+the only thing that decides what Spider offers: a provider is never discovered, because a tool whose
+output depends on what happens to be installed is a tool nobody can reproduce. They are `devDependencies`
+here, needed by the demo rather than by Spider, which loads a provider by name from the model's own
+directory and never imports one. Clone Spider on its own and the suite is still green; *Generate* simply
+says nothing is registered.
+
+**Generating writes nothing.** The artifacts open in a document view, with their losses, refusals and
+the time they were made. `7k generate` is what puts files on disk.
+
 Or point it at your own workspace:
 
 **In VS Code**, open this folder and press <kbd>F5</kbd>: Spider starts with the example loaded and

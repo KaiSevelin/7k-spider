@@ -1,5 +1,7 @@
 {
-  // Press F5 and Spider starts with the example loaded, and the browser opens itself.
+  // Press F5 and Spider starts with the example loaded, and the browser opens itself. The four
+// providers come with it, because `examples/.7k/build.json` names them and they are
+// devDependencies here — so `Generate` has something in it without any setup.
   //
   // `node --import tsx` rather than `npx tsx`: the debugger attaches to the process it started, so
   // breakpoints in src/*.ts work without a build step, and there is no npx shim in between to confuse
