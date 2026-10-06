@@ -21,6 +21,7 @@ import {
   applyAll,
   buildWorkspace,
   addPipe,
+  addSaga,
   addService,
   connectEmit,
   connectReact,
@@ -182,7 +183,26 @@ const optionsFromForm = (): GraphOptions => ({
   deadLetters: el<HTMLInputElement>("dead").checked,
 });
 
-const currentLens = (): Lens => views[lensPicker.value] ?? EVERYTHING;
+/**
+ * A lens the model implies rather than one somebody saved.
+ *
+ * A package is the ownership boundary — the thing that builds, versions and deploys as one — so "show
+ * me just this subsystem" is a question every model can be asked, and making somebody write a
+ * `views.json` entry per package to ask it is asking them to restate what the model already says.
+ *
+ * Prefixed so it cannot collide with a saved name, and saved names are looked up first, so a view
+ * called `pkg:anything` still wins.
+ */
+const PACKAGE_LENS = "pkg:";
+
+const currentLens = (): Lens => {
+  const saved = views[lensPicker.value];
+  if (saved !== undefined) return saved;
+  if (lensPicker.value.startsWith(PACKAGE_LENS)) {
+    return { include: [`package:${lensPicker.value.slice(PACKAGE_LENS.length)}`], exclude: [] };
+  }
+  return EVERYTHING;
+};
 
 /** A row that selects something else: the second hop of a two-hop question. */
 function row(label: string, id: SelectionId | undefined): HTMLElement {
@@ -1946,7 +1966,7 @@ function startAdd(): void {
   name.type = "text";
   // A pipe's name is a plain lowercase identifier and everything else is PascalCase (`10-grammar.md`),
   // so the placeholder says which this one wants rather than leaving it to be guessed.
-  name.placeholder = kind === "service" ? "Name" : "name";
+  name.placeholder = kind === "service" || kind === "saga" ? "Name" : "name";
   name.autocomplete = "off";
 
   const pkg = document.createElement("select");
@@ -1956,6 +1976,23 @@ function startAdd(): void {
     node.textContent = option;
     pkg.append(node);
   }
+
+  // A saga is the one kind here that cannot be written without a second answer: `start on M` is part
+  // of the declaration, not a later edit, because a saga keyed on nothing has no instances.
+  const start = document.createElement("select");
+  if (kind === "saga") {
+    const messages = model.decls
+      .filter((d) => d.kind === "message")
+      .map((d) => qualify(d.id))
+      .sort();
+    for (const name of messages) {
+      const node = document.createElement("option");
+      node.value = name;
+      node.textContent = name;
+      start.append(node);
+    }
+    start.title = "the message that starts an instance";
+  }
   // The package of whatever is selected, when that is a sensible guess, because adding a pipe usually
   // means adding it beside the thing you were just looking at.
   const at = selection;
@@ -1964,6 +2001,7 @@ function startAdd(): void {
   if (near !== undefined && packages.includes(near)) pkg.value = near;
 
   form.append(name, pkg);
+  if (kind === "saga") form.append(start);
 
   const preview = document.createElement("div");
 
@@ -1984,7 +2022,9 @@ function startAdd(): void {
     const mutation =
       kind === "service"
         ? addService(where, { pkg: pkg.value, name: typed })
-        : addPipe(where, { pkg: pkg.value, name: typed, kind: kind as "queue" | "topic" | "stream" });
+        : kind === "saga"
+          ? addSaga(where, { pkg: pkg.value, name: typed, start: start.value })
+          : addPipe(where, { pkg: pkg.value, name: typed, kind: kind as "queue" | "topic" | "stream" });
 
     proposeWhat.textContent = mutation.describe;
     showMutation(mutation, preview);
@@ -1993,6 +2033,7 @@ function startAdd(): void {
 
   name.addEventListener("input", redraw);
   pkg.addEventListener("change", redraw);
+  start.addEventListener("change", redraw);
 
   proposeBody.replaceChildren(form, preview);
   redraw();
@@ -2276,14 +2317,38 @@ function draw(read: Sources): void {
 function fillLenses(): void {
   const chosen = lensPicker.value;
   lensPicker.replaceChildren();
+
   for (const name of [EVERYTHING_LABEL, ...Object.keys(views)]) {
     const option = document.createElement("option");
     option.value = name === EVERYTHING_LABEL ? "" : name;
     option.textContent = name;
     lensPicker.append(option);
   }
-  // A saved lens that has since been deleted falls back to everything rather than to nothing.
-  lensPicker.value = chosen in views ? chosen : "";
+
+  // Then one per package, in a group of their own so a saved lens is never confused with a derived
+  // one. A lens closes over its edges, so a subsystem seen this way still shows what crosses its
+  // boundary — as ports, which is what makes it a perimeter view rather than a truncated one.
+  const packages = [...(model?.packages.values() ?? [])]
+    .filter((pkg) => pkg.declared)
+    .map((pkg) => pkg.name)
+    .sort();
+  if (packages.length > 1) {
+    const group = document.createElement("optgroup");
+    group.label = "one package";
+    for (const name of packages) {
+      const option = document.createElement("option");
+      option.value = `${PACKAGE_LENS}${name}`;
+      option.textContent = name;
+      group.append(option);
+    }
+    lensPicker.append(group);
+  }
+
+  // A saved lens that has since been deleted falls back to everything rather than to nothing; so does
+  // a package lens for a package that is no longer declared.
+  const stillThere =
+    chosen in views || (chosen.startsWith(PACKAGE_LENS) && packages.includes(chosen.slice(PACKAGE_LENS.length)));
+  lensPicker.value = stillThere ? chosen : "";
 }
 
 async function load(): Promise<void> {
@@ -2346,6 +2411,9 @@ async function load(): Promise<void> {
   draw((await sourcesResponse.json()) as Sources);
   fillComposable();
   fillDataSubjects();
+  // Again, now that there is a model: the first call ran before `draw`, so it knew the saved views
+  // and not yet the packages.
+  fillLenses();
   if (showingCode()) buildCode();
   // A re-parse rebuilds the form against the new model, keeping whatever has been typed: the payload is
   // data, and only the declaration it is checked against changed.

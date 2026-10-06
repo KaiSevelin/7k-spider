@@ -131,7 +131,7 @@ describe.skipIf(false)("adding a declaration", () => {
     expect(written.startsWith(MODEL.trimEnd())).toBe(true);
   }, 60_000);
 
-  it("offers a service and all three pipe kinds", async () => {
+  it("offers a service, all three pipe kinds, and a saga", async () => {
     if (!ready) return;
     const p = await fresh();
     expect(await p.locator("#addWhat option").allTextContents()).toEqual([
@@ -139,7 +139,42 @@ describe.skipIf(false)("adding a declaration", () => {
       "queue",
       "topic",
       "stream",
+      "saga",
     ]);
+  }, 60_000);
+
+  /**
+   * A saga needs a second answer the others do not: `start on M` is part of the declaration, because a
+   * saga keyed on nothing has no instances.
+   */
+  it("asks a saga which message starts it", async () => {
+    if (!ready) return;
+    const p = await fresh();
+    await p.selectOption("#addWhat", "saga");
+    await p.click("#addNew");
+    await p.waitForSelector("#addForm input");
+    expect(await p.locator("#addForm select").count()).toBe(2);
+    expect(await p.locator("#addForm select").nth(1).locator("option").allTextContents()).toContain(
+      "shop.PlaceOrder",
+    );
+  }, 60_000);
+
+  it("writes a saga with the version the grammar wants", async () => {
+    if (!ready) return;
+    const p = await fresh();
+    await p.selectOption("#addWhat", "saga");
+    await p.click("#addNew");
+    await p.waitForSelector("#addForm input");
+    await p.locator("#addForm input").type("Checkout", { delay: 8 });
+    await p.waitForTimeout(200);
+    const preview = await p.locator("#proposeBody pre").first().textContent();
+    expect(preview).toContain("saga Checkout v1.0 {");
+    expect(preview).toContain("start on PlaceOrder");
+
+    await p.click("#proposeApply");
+    await p.waitForTimeout(800);
+    const written = await readFile(file, "utf-8");
+    expect(written).toContain("saga Checkout v1.0 {");
   }, 60_000);
 
   it("writes a service as a service", async () => {
