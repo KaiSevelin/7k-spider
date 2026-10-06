@@ -429,6 +429,279 @@
       /* A proposal, shown before anything is written. Section 7 of 20-ir.md: a caller gets the edits and
          the diagnostics so it can preview — an editor that wrote the file the instant two nodes were
          clicked would be one you stop clicking in. */
+      /* The model's own prose. A drawer like the sequence, because it is read rather than watched, and
+         long enough to want the full height. */
+      /* The Data layer. A drawer like the sequence, because it is a second drawing of the same model
+         rather than something that belongs on the graph's canvas. */
+      #data {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(760px, 68vw);
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-left: 1px solid var(--line);
+        z-index: 4;
+      }
+      #data[hidden] { display: none; }
+      #dataCanvas { flex: 1; min-height: 0; }
+      #dataScope { color: var(--ink-dim); white-space: nowrap; }
+      #dataHidden { color: var(--ink-dim); }
+
+      #about {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(620px, 64vw);
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-left: 1px solid var(--line);
+        z-index: 4;
+      }
+      #about[hidden] { display: none; }
+      #aboutWhere {
+        padding: 6px 14px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-dim);
+        word-break: break-all;
+      }
+      #aboutBody { flex: 1; overflow: auto; padding: 4px 16px 24px; line-height: 1.6; }
+      #aboutBody h2 { font-size: 15px; margin: 18px 0 6px; }
+      #aboutBody h3 { font-size: 13px; margin: 16px 0 4px; color: var(--ink-dim); }
+      #aboutBody h4, #aboutBody h5, #aboutBody h6 { font-size: 12px; margin: 12px 0 4px; }
+      #aboutBody p, #aboutBody ul, #aboutBody ol { margin: 8px 0; }
+      #aboutBody li { margin: 3px 0; }
+      #aboutBody code {
+        background: var(--package);
+        border-radius: 3px;
+        padding: 0 3px;
+      }
+      #aboutBody pre {
+        margin: 10px 0;
+        padding: 8px 10px;
+        overflow: auto;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+      }
+      #aboutBody pre code { background: none; padding: 0; }
+      #aboutBody blockquote {
+        margin: 10px 0;
+        padding-left: 10px;
+        border-left: 3px solid var(--line);
+        color: var(--ink-dim);
+      }
+      #aboutBody table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+      #aboutBody th, #aboutBody td {
+        border: 1px solid var(--line);
+        padding: 4px 7px;
+        text-align: left;
+        vertical-align: top;
+      }
+      #aboutBody th { color: var(--ink-dim); font-weight: 600; }
+      #aboutBody hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+      #aboutBody a { color: var(--accent); }
+
+      /* The right-click menu. Placed in script, because where it opens is where the pointer was. */
+      #menu {
+        position: absolute;
+        z-index: 7;
+        min-width: 200px;
+        padding: 4px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        box-shadow: 0 6px 20px rgb(0 0 0 / 30%);
+      }
+      #menu[hidden] { display: none; }
+      #menu header {
+        padding: 5px 8px 6px;
+        margin-bottom: 2px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-dim);
+        white-space: nowrap;
+      }
+      #menu button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        font: inherit;
+        color: var(--ink);
+        background: none;
+        border: 0;
+        border-radius: 3px;
+        padding: 5px 8px;
+        cursor: pointer;
+      }
+      #menu button:hover { background: var(--package); }
+      #menu button i,
+      #menu > i {
+        display: block;
+        font-style: normal;
+        font-size: 10px;
+        color: var(--ink-dim);
+      }
+      #menu > i { padding: 5px 8px; }
+
+      /* Opening a model. A dialog like `#propose`, because it is a choice you make and then leave. */
+      #open {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: min(560px, calc(100% - 24px));
+        max-height: 76%;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        box-shadow: 0 10px 34px rgb(0 0 0 / 26%);
+        z-index: 6;
+      }
+      #open[hidden] { display: none; }
+      #openAt {
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-dim);
+        word-break: break-all;
+      }
+      #openList {
+        flex: 1;
+        overflow: auto;
+        margin: 0;
+        padding: 6px;
+        list-style: none;
+      }
+      #openList button {
+        display: flex;
+        width: 100%;
+        gap: 10px;
+        align-items: baseline;
+        font: inherit;
+        text-align: left;
+        color: var(--ink);
+        background: none;
+        border: 0;
+        border-radius: 3px;
+        padding: 5px 7px;
+        cursor: pointer;
+      }
+      #openList button:hover { background: var(--package); }
+      /* A directory with no model in it is still worth walking through, just not worth reading. */
+      #openList button.empty { color: var(--ink-dim); }
+      #openList .count { margin-left: auto; color: var(--ink-dim); white-space: nowrap; }
+      #openState { color: var(--ink-dim); }
+      #openState.bad { color: var(--warn); }
+
+      /* What a run would write, before it writes it.
+         A dialog rather than a drawer: it is a decision you make and then leave, like `#propose`. */
+      #preview {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: min(940px, calc(100% - 24px));
+        height: min(620px, calc(100% - 24px));
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        box-shadow: 0 10px 34px rgb(0 0 0 / 26%);
+        z-index: 6;
+      }
+      #preview[hidden] { display: none; }
+      #previewBody { flex: 1; display: flex; min-height: 0; }
+      /* The document view: a scrolling column of cards, each clamped until it is opened. */
+      #previewDocs {
+        flex: 1;
+        overflow: auto;
+        margin: 0;
+        padding: 8px;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .doc {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--bg);
+        overflow: hidden;
+      }
+      .doc > header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 8px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+      }
+      .doc > header .path {
+        font-family: var(--mono);
+        font-weight: 600;
+        color: var(--ink);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .doc > header .about { color: var(--ink-dim); white-space: nowrap; }
+      .doc > header .spacer { flex: 1; }
+      .doc.draft > header .path { color: var(--warn); }
+      .doc .mark {
+        font-size: 11px;
+        padding: 0 5px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--ink-dim);
+      }
+      .doc.changed .mark { color: var(--boundary); border-color: var(--boundary); }
+      /* An icon is only there when it has something to say, so its absence is information. */
+      .doc button.icon {
+        border: 1px solid transparent;
+        background: none;
+        color: var(--ink-dim);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        border-radius: 4px;
+        padding: 1px 5px;
+      }
+      .doc button.icon:hover { border-color: var(--accent); color: var(--accent); }
+      .doc button.icon.on { border-color: var(--accent); color: var(--accent); background: var(--package); }
+      .doc button.icon.loss { color: var(--warn); }
+      .doc button.icon.bad { color: var(--bad); }
+      .doc .detail {
+        margin: 0;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+        font-size: 12px;
+        white-space: pre-wrap;
+        color: var(--ink);
+      }
+      .doc .detail[hidden] { display: none; }
+      .doc pre {
+        margin: 0;
+        padding: 6px 10px;
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.45;
+        overflow: auto;
+        /* Three rows, which is enough to tell one file from another and not enough to scroll past. */
+        max-height: calc(3 * 1.45em + 12px);
+        cursor: pointer;
+      }
+      .doc.open pre { max-height: 46vh; cursor: default; }
+      #previewNote { color: var(--ink-dim); font-size: 12px; }
+      #previewState { color: var(--ink-dim); }
+
       #propose {
         position: absolute;
         top: 50%;
@@ -546,6 +819,74 @@
 
       /* The saga drawer. Same edge and width rules as the sequence: one drawer at a time, and the
          graph underneath is never re-laid out. */
+      /* What an edge carries, while the pointer is on it.
+         `pointer-events: none` matters: a tooltip the pointer can land on takes the hover away from the
+         edge that raised it, and the thing flickers. */
+      .graphTip {
+        position: absolute;
+        z-index: 6;
+        transform: translate(-50%, calc(-100% - 12px));
+        max-width: 320px;
+        padding: 6px 8px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font: 11px/1.5 var(--mono);
+        color: var(--ink);
+        pointer-events: none;
+        box-shadow: 0 2px 10px rgb(0 0 0 / 0.35);
+      }
+      .graphTip[hidden] { display: none; }
+      .graphTip b { display: block; color: var(--ink-dim); font-weight: 600; }
+      .graphTip ul { margin: 3px 0 0; padding: 0; list-style: none; }
+      .graphTip i { display: block; margin-top: 4px; color: var(--ink-dim); font-style: normal; }
+
+      /* What is happening, in words, while a trace replays.
+         Bottom-left and out of the way: the graph is what you are watching, and this is the caption. */
+      #narrative {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        max-width: min(460px, calc(100% - 24px));
+        padding: 7px 10px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        border-radius: 4px;
+        font: 12px/1.5 var(--mono);
+        color: var(--ink);
+        z-index: 5;
+        pointer-events: none;
+      }
+      #narrative[hidden] { display: none; }
+      /* A failure is the interesting part of a run, so it is the one thing here that changes colour. */
+      #narrative.bad { border-left-color: var(--warn); }
+      #narrative .kind {
+        display: block;
+        font-size: 10px;
+        color: var(--ink-dim);
+        text-transform: lowercase;
+      }
+      #narrative.bad .kind { color: var(--warn); }
+
+      /* A panel rather than a corner overlay: a key is read once and then in the way, and the window is
+         there for the graph. */
+      #legend {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        width: min(420px, calc(100% - 24px));
+        max-height: calc(100% - 24px);
+        overflow: auto;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        z-index: 5;
+      }
+      #legend[hidden] { display: none; }
+      /* Fixed, so the rows keep their size and the panel scrolls instead of the drawing shrinking. */
+      #legendCanvas { height: 500px; }
+
       #saga {
         position: absolute;
         top: 0;
@@ -621,6 +962,10 @@
       </button>
       <button type="button" id="toggleCompose" title="build a message (c)">compose</button>
       <button type="button" id="connect" title="connect two things (n)">connect&hellip;</button>
+      <button type="button" id="toggleLegend" title="what the shapes mean (?)">legend</button>
+      <button type="button" id="toggleData" title="the data layer (d)">data</button>
+      <button type="button" id="toggleAbout" title="what this model is (a)" hidden>about</button>
+      <button type="button" id="toggleOpen" title="open another model (o)">open&hellip;</button>
       <span id="status">loading…</span>
       <span id="focus" hidden>
         focus <b id="focusName"></b>
@@ -648,6 +993,38 @@
         <ul id="paletteList"></ul>
       </div>
       <aside id="sequence" hidden></aside>
+      <div id="narrative" hidden></div>
+      <div id="menu" hidden></div>
+      <aside id="data" hidden>
+        <header class="panelHead">
+          <b>data</b>
+          <select id="dataDepth" title="how far from the selection">
+            <option value="1">1 hop</option>
+            <option value="2" selected>2 hops</option>
+            <option value="3">3 hops</option>
+            <option value="0">everything</option>
+          </select>
+          <span id="dataScope"></span>
+          <span id="dataHidden"></span>
+          <button type="button" id="dataClose" title="close">&times;</button>
+        </header>
+        <div id="dataCanvas"></div>
+      </aside>
+      <aside id="about" hidden>
+        <header class="panelHead">
+          <b>about this model</b>
+          <button type="button" id="aboutClose" title="close (Esc)">&times;</button>
+        </header>
+        <div id="aboutWhere"></div>
+        <div id="aboutBody"></div>
+      </aside>
+      <aside id="legend" hidden>
+        <header class="panelHead">
+          <b>what the shapes mean</b>
+          <button type="button" id="legendClose" title="close">&times;</button>
+        </header>
+        <div id="legendCanvas"></div>
+      </aside>
       <aside id="saga" hidden>
         <header class="panelHead">
           <select id="sagaWhich" title="which saga"></select>
@@ -666,6 +1043,31 @@
         <pre id="composeOut"></pre>
       </aside>
       <aside id="sidebar"></aside>
+      <div id="open" hidden>
+        <header class="panelHead">
+          <b>open a model</b>
+          <button type="button" id="openClose" title="close (Esc)">&times;</button>
+        </header>
+        <div id="openAt"></div>
+        <ul id="openList"></ul>
+        <footer class="panelFoot">
+          <span id="openState"></span>
+          <button type="button" id="openHere">open this folder</button>
+        </footer>
+      </div>
+      <div id="preview" hidden>
+        <header class="panelHead">
+          <b id="previewWhat"></b>
+          <button type="button" id="previewClose" title="cancel (Esc)">&times;</button>
+        </header>
+        <div id="previewBody">
+          <ol id="previewDocs"></ol>
+        </div>
+        <footer class="panelFoot">
+          <span id="previewState"></span>
+          <span id="previewNote">nothing here is written to disk — `7k generate` does that</span>
+        </footer>
+      </div>
       <div id="propose" hidden>
         <header class="panelHead">
           <b id="proposeWhat"></b>

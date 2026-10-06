@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_PORT, collect, serve, type Serving } from "../src/serve.js";
 import { parse } from "../src/cli.js";
-import { LAYOUT, PIPE_SHAPE } from "../src/render.js";
+import { LAYOUT, LEGEND, PIPE_SHAPE, STYLE, legendElements, resolveStyle } from "../src/render.js";
 
 const MODEL = `
 package acme.shop
@@ -218,5 +218,235 @@ describe("serving", () => {
     // A cached `sources.json` would make the file watcher pointless.
     expect((await get("/sources.json")).headers.get("cache-control")).toBe("no-store");
     expect((await get("/bundle.js")).headers.get("cache-control")).toBe("no-store");
+  });
+});
+
+describe("a route that throws", () => {
+  let serving: Serving;
+
+  beforeAll(async () => {
+    // A trace that is not there. `/trace.ndjson` reads it per request, so the read fails inside the
+    // handler rather than at startup, which is the only way to get at the wrapper around it.
+    serving = await serve({
+      paths: [dir],
+      trace: join(dir, "never-written.ndjson"),
+      port: 0,
+      watch: false,
+    });
+  });
+
+  afterAll(async () => {
+    await serving.close();
+  });
+
+  it("answers 500 and leaves the server standing", async () => {
+    // The failure this exists to prevent: the handler throws, the wrapper tries to say 500 on a
+    // response it can no longer write headers to, and *that* throw is an unhandled rejection — which
+    // ends the process. Every later request is then refused, so the browser the launch configuration
+    // had just opened reports that the site cannot be reached, as though Spider had never started.
+    const base = serving.url.slice(0, -1);
+
+    const failed = await fetch(`${base}/trace.ndjson`);
+    expect(failed.status).toBe(500);
+    expect(await failed.text()).toContain("never-written.ndjson");
+
+    expect((await fetch(`${base}/sources.json`)).status).toBe(200);
+  });
+});
+
+describe("the palette", () => {
+  const used = [
+    ...new Set([...JSON.stringify(STYLE).matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1]!)),
+  ];
+
+  it("names only variables the page actually defines", async () => {
+    // Cytoscape has no CSS behind its stylesheet, so a name the page does not define is dropped and the
+    // element falls back to Cytoscape's own grey box, black border and black label — with nothing but a
+    // console warning to say so. A typo here is invisible until somebody looks at the drawing and finds
+    // it has no colour in it at all, which is exactly how this went unnoticed.
+    const page = await readFile(new URL("../src/web/index.html", import.meta.url), "utf-8");
+    expect(used.length).toBeGreaterThan(5);
+    for (const name of used) expect(page, name).toContain(`${name}:`);
+  });
+
+  it("leaves nothing for Cytoscape to reject", () => {
+    expect(JSON.stringify(resolveStyle(STYLE, () => "#123456"))).not.toContain("var(");
+  });
+
+  it("drops what the host cannot resolve, rather than blanking it", () => {
+    // An empty string is not a colour either, and Cytoscape rejects the property just the same. Leaving
+    // it out lets Cytoscape's own default stand, which is at least a colour.
+    const blocks = resolveStyle(STYLE, () => undefined) as unknown as {
+      selector: string;
+      style: Record<string, unknown>;
+    }[];
+
+    // Every property this rule has is a colour, so nothing of it should survive.
+    expect(blocks.find((b) => b.selector === "node.service")?.style).toEqual({});
+    // While the ones that were never variables are untouched.
+    expect(blocks.find((b) => b.selector === "node.kind-queue")?.style).toEqual({ shape: "rectangle" });
+
+    for (const block of blocks) {
+      for (const [prop, value] of Object.entries(block.style)) {
+        // `label: ""` is deliberate on the marker, which carries no text.
+        if (prop === "label") continue;
+        expect(value, `${block.selector} { ${prop} }`).not.toBe("");
+      }
+    }
+  });
+});
+
+describe("the legend", () => {
+  // Every class the stylesheet actually styles. A row naming one it does not would draw a plain box and
+  // say "a topic" beside it, which is worse than having no legend.
+  const styled = new Set([...JSON.stringify(STYLE).matchAll(/node\.([\w-]+)/g)].map((m) => m[1]!));
+
+  it("draws its swatches with classes the stylesheet styles", () => {
+    for (const row of LEGEND) {
+      for (const cls of (row.classes ?? "").split(" ").filter((c) => c !== "")) {
+        expect(styled.has(cls), `"${row.what}" uses .${cls}`).toBe(true);
+      }
+    }
+  });
+
+  it("has a row for every kind of pipe", () => {
+    // A new pipe kind is a new shape on the canvas, and a shape with nothing to look it up by is the
+    // thing a legend exists to prevent.
+    const classes = LEGEND.map((r) => r.classes ?? "").join(" ");
+    for (const kind of Object.keys(PIPE_SHAPE)) expect(classes, kind).toContain(`kind-${kind}`);
+  });
+
+  it("says something about every row", () => {
+    for (const row of LEGEND) expect(row.what.trim(), JSON.stringify(row)).not.toBe("");
+  });
+
+  it("builds well-formed elements, with both ends of every line present", () => {
+    const elements = legendElements();
+    const ids = elements.map((e) => (e.data as { id: string }).id);
+    expect(new Set(ids).size, "ids are unique").toBe(ids.length);
+
+    const nodes = new Set(
+      elements.filter((e) => (e.data as { source?: string }).source === undefined).map((e) => (e.data as { id: string }).id),
+    );
+    for (const e of elements) {
+      const { source, target } = e.data as { source?: string; target?: string };
+      if (source === undefined) continue;
+      expect(nodes.has(source), `source ${source}`).toBe(true);
+      expect(nodes.has(target!), `target ${target!}`).toBe(true);
+    }
+  });
+});
+
+describe("opening another model", () => {
+  let serving: Serving;
+  let other: string;
+
+  beforeAll(async () => {
+    other = await mkdtemp(join(tmpdir(), "spider-other-"));
+    await writeFile(join(other, "other.7k"), "package other.shop\n", "utf-8");
+    await mkdir(join(other, "empty"), { recursive: true });
+    serving = await serve({ paths: [dir], port: 0, watch: false });
+  });
+
+  afterAll(async () => {
+    await serving.close();
+  });
+
+  const base = (): string => serving.url.slice(0, -1);
+
+  it("browses from the model it is already serving, so the picker opens somewhere recognisable", async () => {
+    const body = (await (await fetch(`${base()}/browse`)).json()) as {
+      at: string;
+      here: { models: number };
+      entries: { name: string; models: number }[];
+    };
+    expect(body.at).toBe(dir);
+    expect(body.here.models).toBe(2);
+    // `nested` holds one; `node_modules` and the dotted `.7k` directory are not offered at all, because
+    // `collect` would not read them either.
+    expect(body.entries.map((e) => e.name)).toEqual(["nested"]);
+    expect(body.entries[0]?.models).toBe(1);
+  });
+
+  it("stops offering `..` at a filesystem root", async () => {
+    let at = dir;
+    for (let i = 0; i < 20; i++) {
+      const body = (await (await fetch(`${base()}/browse?at=${encodeURIComponent(at)}`)).json()) as {
+        at: string;
+        parent?: string;
+      };
+      if (body.parent === undefined) return;
+      at = body.parent;
+    }
+    throw new Error("a root was never reached");
+  });
+
+  it("says so rather than throwing when the place is not there", async () => {
+    const response = await fetch(`${base()}/browse?at=${encodeURIComponent(join(dir, "nowhere"))}`);
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as { problem?: string }).problem).toBeTruthy();
+  });
+
+  const open = async (paths: unknown): Promise<Response> =>
+    fetch(`${base()}/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths }),
+    });
+
+  it("refuses a place with no model in it, and keeps serving the one that was open", async () => {
+    // Opening empty would draw a graph of nothing, which looks like a broken Spider. The model that was
+    // already open is the better thing to still be looking at.
+    const response = await open([join(other, "empty")]);
+    expect(response.status).toBe(409);
+    const after = (await (await fetch(`${base()}/sources.json`)).json()) as { files: unknown[] };
+    expect(after.files).toHaveLength(2);
+  });
+
+  it("refuses a body that names nothing", async () => {
+    expect((await open([])).status).toBe(400);
+    expect((await open("somewhere")).status).toBe(400);
+  });
+
+  it("serves the new model afterwards", async () => {
+    const response = await open([other]);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ paths: [other], files: 1 });
+
+    const after = (await (await fetch(`${base()}/sources.json`)).json()) as {
+      files: { path: string; source: string }[];
+    };
+    expect(after.files).toHaveLength(1);
+    expect(after.files[0]?.source).toContain("package other.shop");
+  });
+});
+
+describe("a Spider bound to a routable address", () => {
+  let serving: Serving;
+
+  beforeAll(async () => {
+    serving = await serve({ paths: [dir], port: 0, host: "0.0.0.0", watch: false });
+  });
+
+  afterAll(async () => {
+    await serving.close();
+  });
+
+  it("will not read the disk on a page's say-so", async () => {
+    // `--host 0.0.0.0` turns a developer's convenience into a file server for the network, so the two
+    // routes that reach outside the served model are the two that are refused.
+    const at = `http://127.0.0.1:${serving.port}`;
+    expect((await fetch(`${at}/browse`)).status).toBe(403);
+    expect(
+      (
+        await fetch(`${at}/open`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ paths: [dir] }),
+        })
+      ).status,
+    ).toBe(403);
+    // While everything about the model it was told to serve still works.
+    expect((await fetch(`${at}/sources.json`)).status).toBe(200);
   });
 });

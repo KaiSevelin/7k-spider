@@ -1,5 +1,5 @@
 /**
- * Regenerates `examples/handover.ndjson`.
+ * Regenerates the committed traces, one per example workspace.
  *
  * A script rather than a shell pipeline, for three reasons: the sandbox CLI prints diagnostics on the
  * same stream as the trace, so the NDJSON has to be filtered out of it; redirection is not portable
@@ -19,37 +19,62 @@ import { readTrace, validateTrace } from "@sevenk/core";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const sandbox = resolve(root, "..", "7k-sandbox");
-const scenario = join(root, "examples", "handover.scenario.7k");
-const out = join(root, "examples", "handover.ndjson");
+
+/** Every workspace with scenarios worth replaying. One entry per committed trace. */
+const TRACES = [
+  {
+    scenario: join(root, "examples", "handover.scenario.7k"),
+    out: join(root, "examples", "handover.ndjson"),
+    label: "examples/handover.ndjson",
+  },
+  {
+    scenario: join(root, "samples", "ticketing", "resolution.scenario.7k"),
+    out: join(root, "samples", "ticketing", "resolution.ndjson"),
+    label: "samples/ticketing/resolution.ndjson",
+  },
+  {
+    scenario: join(root, "samples", "ecommerce", "fulfilment.scenario.7k"),
+    out: join(root, "samples", "ecommerce", "fulfilment.ndjson"),
+    label: "samples/ecommerce/fulfilment.ndjson",
+  },
+] as const;
 
 if (!existsSync(join(sandbox, "src", "cli.ts"))) {
   process.stderr.write(
     `no sandbox at ${sandbox}\n` +
-      "The trace is committed, so the demo works without one. To regenerate it, check out\n" +
+      "The traces are committed, so the demos work without one. To regenerate them, check out\n" +
       "https://github.com/KaiSevelin/7k-sandbox beside this repository.\n",
   );
   process.exit(1);
 }
 
-const child = spawn(
-  process.execPath,
-  ["--import", "tsx", join(sandbox, "src", "cli.ts"), "trace", scenario, "--ndjson"],
-  { cwd: sandbox, stdio: ["ignore", "pipe", "pipe"] },
-);
+const run = async (scenario: string): Promise<{ code: number | null; stdout: string; stderr: string }> =>
+  new Promise((done) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", join(sandbox, "src", "cli.ts"), "trace", scenario, "--ndjson"],
+      { cwd: sandbox, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf-8")));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf-8")));
+    child.on("close", (code) => done({ code, stdout, stderr }));
+  });
 
-let stdout = "";
-let stderr = "";
-child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf-8")));
-child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf-8")));
+let failed = false;
 
-child.on("close", (code) => {
+for (const { scenario, out, label } of TRACES) {
+  const { code, stdout, stderr } = await run(scenario);
+
   // The CLI prints the model's own diagnostics alongside the trace, so the NDJSON is the lines that are
   // NDJSON. Everything else is for a person.
   const lines = stdout.split("\n").filter((l) => l.startsWith("{"));
 
   if (lines.length === 0) {
-    process.stderr.write(`no trace came out (exit ${code})\n${stdout}${stderr}`);
-    process.exit(1);
+    process.stderr.write(`${label}: no trace came out (exit ${code})\n${stdout}${stderr}`);
+    failed = true;
+    continue;
   }
 
   const text = `${lines.join("\n")}\n`;
@@ -61,13 +86,14 @@ child.on("close", (code) => {
   if (problems.length > 0 || invalid.length > 0) {
     for (const p of problems) process.stderr.write(`  line ${p.line ?? "?"}: ${p.message}\n`);
     for (const p of invalid) process.stderr.write(`  ${p.message}\n`);
-    process.stderr.write("the trace does not satisfy the format, so it was not written\n");
-    process.exit(1);
+    process.stderr.write(`${label}: does not satisfy the trace format, so it was not written\n`);
+    failed = true;
+    continue;
   }
 
   writeFileSync(out, text, "utf-8");
   const runs = new Set(events.map((e) => e.run));
-  process.stdout.write(
-    `examples/handover.ndjson: ${events.length} events, ${runs.size} runs, 0 problems\n`,
-  );
-});
+  process.stdout.write(`${label}: ${events.length} events, ${runs.size} runs, 0 problems\n`);
+}
+
+if (failed) process.exit(1);

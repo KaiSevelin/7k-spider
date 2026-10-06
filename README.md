@@ -25,9 +25,10 @@ and attaches to the browser too, so breakpoints in `src/web/` work as well.
 
 Or point it at your own workspace:
 
-**In VS Code**, open `../7K/7k.code-workspace` and press <kbd>F5</kbd> — or open this folder on its
-own, where <kbd>F5</kbd> does the same thing. Either way Spider starts with the example loaded and the
-browser opens itself.
+**In VS Code**, open this folder and press <kbd>F5</kbd>: Spider starts with the example loaded and
+the browser opens itself. For all three repositories at once, use *File > Open Workspace from File…*
+on `../7K/7k.code-workspace` — opening that as a text file is not the same thing, and <kbd>F5</kbd>
+will try to debug the editor.
 
 ```
 npm run serve <paths>                        # the graph

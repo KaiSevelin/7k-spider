@@ -13,11 +13,31 @@
 import { build, type BuildContext, context } from "esbuild";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { watch, type FSWatcher } from "node:fs";
+import { existsSync, watch, type Dirent, type FSWatcher } from "node:fs";
 import { dirname, extname, join as joinPath, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseManifest } from "@sevenk/generate";
+import {
+  MANIFEST,
+  describeProviders,
+  planFor,
+  providersFor,
+  type PlanRequest,
+} from "./generate.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Where the page's own sources live.
+ *
+ * `tsc` emits JavaScript and nothing else, so `index.html` and the browser's TypeScript never
+ * reach `dist/`. Reading them out of `src/` rather than copying them in is also what keeps the
+ * built command and `tsx src/cli.ts` serving the *same* page: esbuild takes the TypeScript either
+ * way, so there is no second bundle to keep in step.
+ */
+const WEB = existsSync(joinPath(HERE, "web", "index.html"))
+  ? joinPath(HERE, "web")
+  : joinPath(HERE, "..", "src", "web");
 
 export interface ServeOptions {
   /** Files and directories to read `.7k` sources from. */
@@ -70,6 +90,32 @@ export async function collect(paths: readonly string[]): Promise<string[]> {
 
   for (const path of paths) await walk(path);
   return [...found].sort();
+}
+
+/** The names a model's own prose may be under, in the order they are preferred. */
+const README = ["README.md", "readme.md", "README.markdown"];
+
+/**
+ * The README beside a model, if it wrote one.
+ *
+ * Looked up per served root and the first one wins, the same rule `sidecarPath` uses: a workspace has
+ * one introduction, and "which file wins" should not be a question anybody has to answer.
+ *
+ * `collect` only ever returns `.7k`, so this file is invisible to everything else Spider does — which
+ * is the point. It is prose about the system, not part of it.
+ */
+async function readmeOf(paths: readonly string[]): Promise<{ path: string; text: string } | undefined> {
+  for (const path of paths) {
+    const info = await stat(path).catch(() => undefined);
+    if (info === undefined) continue;
+    const root = info.isFile() ? dirname(path) : path;
+    for (const name of README) {
+      const at = joinPath(root, name);
+      const text = await readFile(at, "utf-8").catch(() => undefined);
+      if (text !== undefined) return { path: at, text };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -145,6 +191,93 @@ async function writeSources(
     wrote.push(file);
   }
   return { ok: true, wrote };
+}
+
+/**
+ * The directory a model's sidecars and its generated output belong to.
+ *
+ * The first path's root, the same rule `sidecarPath` uses: a workspace has one `.7k/`, and "which one
+ * wins" should not be a question anybody has to answer.
+ */
+const rootOf = (paths: readonly string[]): string => {
+  const first = paths[0];
+  if (first === undefined) return process.cwd();
+  return extname(first) === "" ? first : dirname(first);
+};
+
+/**
+ * The addresses that mean "this machine and nothing else".
+ *
+ * `/browse` and `/open` are gated on binding to one of these. See `onlyThisMachine` in `serve`.
+ */
+const LOOPBACK: ReadonlySet<string> = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/**
+ * Whether a mutating request came from Spider's own page.
+ *
+ * Binding to loopback keeps other *machines* out and does nothing about other *pages on this one*. A
+ * site you have open can `fetch` a local server, and CORS does not help: it governs reading the
+ * response, not causing the side effect — so a POST lands and the write happens whether or not the
+ * attacker ever sees the answer. A `content-type` of `text/plain` avoids the preflight that would
+ * otherwise have stopped it.
+ *
+ * So every route that writes asks where the request came from. A browser sends `Sec-Fetch-Site` on
+ * everything and `Origin` on every cross-origin POST; a tool like `curl` or a test sends neither, and
+ * is allowed, because something already running on this machine as this user needs no permission from
+ * Spider to write a file it could write directly.
+ */
+function fromOurOwnPage(req: IncomingMessage, port: number): boolean {
+  const site = req.headers["sec-fetch-site"];
+  if (typeof site === "string") return site === "same-origin" || site === "none";
+
+  const origin = req.headers.origin;
+  if (origin === undefined || origin === "null") return true;
+
+  try {
+    const url = new URL(origin);
+    return LOOPBACK.has(url.hostname) && url.port === String(port);
+  } catch {
+    return false;
+  }
+}
+
+/** How much of a directory tree `/browse` will read to answer "are there models in here?". */
+const BROWSE_BUDGET = 800;
+
+/**
+ * How many `.7k` files are under a directory, counted cheaply.
+ *
+ * Bounded rather than exhaustive: a listing of a dozen directories should answer at once, and the
+ * question it is really answering is "is there a model in here" — for which an approximate count and a
+ * note that it stopped looking is a better answer than an exact one that took a second to produce. The
+ * same things are skipped as `collect` skips, so the count cannot promise files the server would not
+ * then serve.
+ */
+async function countModels(root: string): Promise<{ models: number; capped: boolean }> {
+  let models = 0;
+  let seen = 0;
+
+  const walk = async (at: string, depth: number): Promise<void> => {
+    if (seen >= BROWSE_BUDGET || depth > 6) return;
+    let entries: Dirent[];
+    try {
+      entries = await readdir(at, { withFileTypes: true });
+    } catch {
+      // Unreadable is not an error here: a directory you cannot open simply holds no models you could
+      // have served either.
+      return;
+    }
+    for (const entry of entries) {
+      if (seen >= BROWSE_BUDGET) return;
+      seen += 1;
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) await walk(joinPath(at, entry.name), depth + 1);
+      else if (extname(entry.name) === ".7k") models += 1;
+    }
+  };
+
+  await walk(root, 0);
+  return { models, capped: seen >= BROWSE_BUDGET };
 }
 
 /**
@@ -302,12 +435,23 @@ async function listen(
 }
 
 export async function serve(options: ServeOptions): Promise<Serving> {
-  const paths = options.paths.map((p) => resolvePath(p));
-  const tracePath = options.trace === undefined ? undefined : resolvePath(options.trace);
+  // Both change when a different model is opened, so neither is a constant. Every closure below reads
+  // them rather than a copy, which is what makes `/open` take effect without rebuilding the server.
+  let paths = options.paths.map((p) => resolvePath(p));
+  let tracePath = options.trace === undefined ? undefined : resolvePath(options.trace);
   const wantWatch = options.watch !== false;
+  const host = options.host ?? "127.0.0.1";
+  /**
+   * Whether this server will read the disk on the page's say-so.
+   *
+   * `/browse` and `/open` let whoever has the page enumerate and read directories this process can
+   * reach. That is exactly what a local tool is for, and exactly what a tool bound to a routable
+   * address must not offer — `--host 0.0.0.0` turns a developer's convenience into a file server.
+   */
+  const onlyThisMachine = LOOPBACK.has(host);
 
-  const entry = joinPath(HERE, "web", "main.ts");
-  const page = joinPath(HERE, "web", "index.html");
+  const entry = joinPath(WEB, "main.ts");
+  const page = joinPath(WEB, "index.html");
 
   // One bundle, built in memory. `context` rather than `build` so a source change rebuilds without
   // paying startup again.
@@ -345,6 +489,8 @@ export async function serve(options: ServeOptions): Promise<Serving> {
    * the page to reload, the page re-reads the layout it just sent. Harmless once and maddening while
    * dragging, so a change within a moment of our own write is not announced.
    */
+  // Known only once the server is listening, and needed by the guard on every write route.
+  let boundPort = 0;
   let wrote = 0;
 
   const listeners = new Set<ServerResponse>();
@@ -389,6 +535,14 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     }
 
     if (url.pathname === "/mutate" && req.method === "PUT") {
+      // Loopback keeps other machines out; this keeps other pages on this one out. See
+      // `fromOurOwnPage`.
+      if (!fromOurOwnPage(req, boundPort)) {
+        res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        res.end("not from Spider's own page");
+        return;
+      }
+
       const outcome = await writeSources(paths, await read(req));
       if (outcome.ok) {
         // Our own write, so the watcher does not announce it: the page reloads itself, because it is
@@ -405,6 +559,14 @@ export async function serve(options: ServeOptions): Promise<Serving> {
 
     if (url.pathname === "/layout.json") {
       if (req.method === "PUT") {
+      // Loopback keeps other machines out; this keeps other pages on this one out. See
+      // `fromOurOwnPage`.
+      if (!fromOurOwnPage(req, boundPort)) {
+        res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        res.end("not from Spider's own page");
+        return;
+      }
+
         const target = await sidecarPath(paths, "layout.json");
         if (target === undefined) {
           res.writeHead(409, { "content-type": "text/plain; charset=utf-8" });
@@ -447,6 +609,131 @@ export async function serve(options: ServeOptions): Promise<Serving> {
       return;
     }
 
+    if (url.pathname === "/browse" || url.pathname === "/open") {
+      if (!onlyThisMachine) {
+        res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        res.end(`this Spider is bound to ${host}, so it will not read the disk on a page's say-so`);
+        return;
+      }
+    }
+
+    if (url.pathname === "/browse") {
+      // Where the current model lives, so the picker opens somewhere recognisable rather than at a root.
+      const first = paths[0];
+      const fallback =
+        first === undefined ? process.cwd() : ((await stat(first).catch(() => undefined))?.isFile() ?? false) ? dirname(first) : first;
+      const at = resolvePath(url.searchParams.get("at") ?? fallback);
+
+      let entries: Dirent[];
+      try {
+        entries = await readdir(at, { withFileTypes: true });
+      } catch (cause) {
+        res.writeHead(404, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
+        res.end(JSON.stringify({ problem: cause instanceof Error ? cause.message : String(cause) }));
+        return;
+      }
+
+      const dirs = entries
+        .filter((e) => e.isDirectory() && e.name !== "node_modules" && !e.name.startsWith("."))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const listed = [];
+      for (const dir of dirs) {
+        const path = joinPath(at, dir.name);
+        listed.push({ name: dir.name, path, ...(await countModels(path)) });
+      }
+
+      const up = dirname(at);
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
+      res.end(
+        JSON.stringify({
+          at,
+          // A filesystem root is its own parent, which is how the picker knows to stop offering `..`.
+          ...(up === at ? {} : { parent: up }),
+          here: await countModels(at),
+          entries: listed,
+        }),
+      );
+      return;
+    }
+
+    if (url.pathname === "/open" && req.method === "POST") {
+      // Loopback keeps other machines out; this keeps other pages on this one out. See
+      // `fromOurOwnPage`.
+      if (!fromOurOwnPage(req, boundPort)) {
+        res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        res.end("not from Spider's own page");
+        return;
+      }
+
+      let wanted: readonly string[];
+      try {
+        const body = JSON.parse(await read(req)) as { paths?: unknown };
+        if (!Array.isArray(body.paths) || body.paths.some((p) => typeof p !== "string" || p === "")) {
+          throw new Error("`paths` must be a non-empty list of strings");
+        }
+        if (body.paths.length === 0) throw new Error("`paths` must name at least one place");
+        wanted = body.paths as readonly string[];
+      } catch (cause) {
+        res.writeHead(400, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: cause instanceof Error ? cause.message : String(cause) }));
+        return;
+      }
+
+      const resolved = wanted.map((p) => resolvePath(p));
+      const found = await collect(resolved).catch(() => [] as string[]);
+      if (found.length === 0) {
+        // Refused rather than opened empty: a graph of nothing looks like a broken Spider, and the
+        // model that *was* open is a better thing to still be looking at.
+        res.writeHead(409, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: `no \`.7k\` files under ${resolved.join(", ")}` }));
+        return;
+      }
+
+      paths = resolved;
+      // A trace records one model running. Kept across an open it would resolve against names the new
+      // model does not have, and a timeline of events that belong to nothing is worse than none.
+      tracePath = undefined;
+      await rewatch();
+
+      res.writeHead(200, { "content-type": MIME[".json"]! });
+      res.end(JSON.stringify({ paths: resolved, files: found.length }));
+      // The page reloads itself off this, exactly as it does for a file changing on disk.
+      announce();
+      process.stderr.write(`opened ${resolved.join(", ")} (${found.length} files)\n`);
+      return;
+    }
+
+    if (url.pathname === "/readme.json") {
+      const found = await readmeOf(paths);
+      if (found === undefined) {
+        // 204 rather than 404, for the same reason a missing trace is: a model with no prose beside it
+        // is a model, not a fault.
+        res.writeHead(204, { "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
+      res.end(JSON.stringify(found));
+      return;
+    }
+
+    if (url.pathname === "/providers") {
+      const text = await readFile(joinPath(rootOf(paths), ".7k", MANIFEST), "utf-8").catch(() => undefined);
+      const manifest = text === undefined ? undefined : parseManifest(text, MANIFEST).manifest;
+      const { providers, problems } = await providersFor(manifest, rootOf(paths));
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
+      res.end(JSON.stringify({ providers: describeProviders(providers), problems }));
+      return;
+    }
+
+    if (url.pathname === "/generate" && req.method === "POST") {
+      const asked = JSON.parse(await read(req)) as PlanRequest;
+      const outcome = await planFor(await files(), rootOf(paths), asked);
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
+      res.end(JSON.stringify(outcome));
+      return;
+    }
+
     if (url.pathname === "/sources.json") {
       const body = JSON.stringify({ files: await files() });
       res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
@@ -468,8 +755,11 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     }
 
     if (url.pathname === "/" || url.pathname === "/index.html") {
+      // Read before the headers go out, as every route above does. Once a status line has been sent, a
+      // failed read can no longer be reported as one and the catch below is left with nothing to say.
+      const text = await readFile(page, "utf-8");
       res.writeHead(200, { "content-type": MIME[".html"]!, "cache-control": "no-store" });
-      res.end(await readFile(page, "utf-8"));
+      res.end(text);
       return;
     }
 
@@ -479,59 +769,84 @@ export async function serve(options: ServeOptions): Promise<Serving> {
 
   const server: Server = createServer((req, res) => {
     handler(req, res).catch((cause: unknown) => {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      const what = `${req.method ?? "?"} ${req.url ?? "?"}`;
+      // A handler that fails *after* its headers have gone out cannot be given a 500: `writeHead`
+      // throws, and a throw in here is an unhandled rejection, which ends the process. That is the
+      // worst failure this server has — one bad request and every later one is refused, which reads
+      // as Spider never having started rather than as one route being broken. The request itself is
+      // past saving, so it is cut off and the reason is printed; the server stays up.
+      if (res.headersSent) {
+        process.stderr.write(`${what} failed after responding: ${reason}\n`);
+        res.destroy();
+        return;
+      }
+      process.stderr.write(`${what} failed: ${reason}\n`);
       res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-      res.end(cause instanceof Error ? cause.message : String(cause));
+      res.end(reason);
     });
   });
 
-  const watchers: FSWatcher[] = [];
-  if (wantWatch) {
-    // Watching the directories rather than the files, so a new `.7k` file shows up too. Coalesced,
-    // because an editor's save is several events and a redraw per event would thrash.
-    let pending: NodeJS.Timeout | undefined;
-    const changed = (): void => {
-      if (pending !== undefined) clearTimeout(pending);
-      pending = setTimeout(() => {
-        // Our own write, coming back around. Announcing it would make the page reload the positions it
-        // had just sent, mid-drag.
-        if (Date.now() - wrote < 400) return;
-        void rebuild().then(announce);
-      }, 60);
-    };
+  // Coalesced, because an editor's save is several events and a redraw per event would thrash.
+  let pending: NodeJS.Timeout | undefined;
+  const changed = (): void => {
+    if (pending !== undefined) clearTimeout(pending);
+    pending = setTimeout(() => {
+      // Our own write, coming back around. Announcing it would make the page reload the positions it
+      // had just sent, mid-drag.
+      if (Date.now() - wrote < 400) return;
+      void rebuild().then(announce);
+    }, 60);
+  };
 
+  /** Watchers over the model being served. Replaced wholesale when a different model is opened. */
+  let modelWatchers: FSWatcher[] = [];
+  /** Watchers over Spider's own sources, which outlive any model. */
+  const ownWatchers: FSWatcher[] = [];
+
+  const rewatch = async (): Promise<void> => {
+    for (const w of modelWatchers) w.close();
+    modelWatchers = [];
+    if (!wantWatch) return;
+
+    // Watching the directories rather than the files, so a new `.7k` file shows up too.
     const roots = new Set<string>();
     for (const path of paths) {
-      const info = await stat(path);
+      const info = await stat(path).catch(() => undefined);
+      if (info === undefined) continue;
       roots.add(info.isFile() ? dirname(path) : path);
     }
     for (const root of roots) {
       try {
-        watchers.push(watch(root, { recursive: true }, changed));
+        modelWatchers.push(watch(root, { recursive: true }, changed));
       } catch {
         // Recursive watching is not available everywhere. The page still works; it just will not
         // refresh by itself, which is better than refusing to start.
-        watchers.push(watch(root, changed));
+        modelWatchers.push(watch(root, changed));
       }
     }
     // The trace, so re-running a scenario shows up without a reload.
     if (tracePath !== undefined) {
       try {
-        watchers.push(watch(tracePath, changed));
+        modelWatchers.push(watch(tracePath, changed));
       } catch {
         /* a trace that is not there yet is not an error */
       }
     }
+  };
 
+  await rewatch();
+
+  if (wantWatch) {
     // The renderer's own sources, so editing Spider refreshes the page it is drawing.
     try {
-      watchers.push(watch(HERE, { recursive: true }, changed));
+      ownWatchers.push(watch(dirname(WEB), { recursive: true }, changed));
     } catch {
       /* optional */
     }
   }
 
   const wanted = options.port ?? DEFAULT_PORT;
-  const host = options.host ?? "127.0.0.1";
   // A port explicitly asked for is a requirement; the default is a preference. Pressing F5 twice is
   // the commonest way to arrive here, and walking up is what makes the second one work.
   const walk = options.port === undefined ? PORT_ATTEMPTS : 0;
@@ -541,6 +856,7 @@ export async function serve(options: ServeOptions): Promise<Serving> {
   }
 
   const actual = (server.address() as { port: number } | null)?.port ?? bound;
+  boundPort = actual;
 
   return {
     url: `http://${host}:${actual}/`,
@@ -548,7 +864,7 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     ...(tracePath === undefined ? {} : { trace: tracePath }),
     files,
     async close() {
-      for (const w of watchers) w.close();
+      for (const w of [...modelWatchers, ...ownWatchers]) w.close();
       for (const res of listeners) res.end();
       listeners.clear();
       await ctx.dispose();
@@ -562,7 +878,7 @@ export async function serve(options: ServeOptions): Promise<Serving> {
 /** Builds the page's bundle to a directory, for a host that cannot run a server. */
 export async function bundleTo(outDir: string): Promise<void> {
   await build({
-    entryPoints: [joinPath(HERE, "web", "main.ts")],
+    entryPoints: [joinPath(WEB, "main.ts")],
     bundle: true,
     format: "iife",
     target: "es2022",

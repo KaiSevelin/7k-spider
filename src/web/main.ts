@@ -42,8 +42,13 @@ import {
   type Focus,
 } from "../focus.js";
 import { EVERYTHING, isPort, parseViews, resolveLens, type Lens, type Views } from "../lens.js";
-import { nodeFor, renderGraph, type Rendered } from "../render.js";
+import { nodeFor, renderGraph, renderLegend, type Rendered } from "../render.js";
 import { createPlayer, positions, runsOf, type Player, type Run } from "../play.js";
+import { narrate } from "../narrate.js";
+import { buildData, type DataOptions } from "../data.js";
+import { renderData, type DataView } from "../data-view.js";
+import { parseMarkdown } from "../markdown.js";
+import { renderMarkdown } from "./markdown-ui.js";
 import { buildIndex, search, type Entry, type Hit } from "../search.js";
 import { renderSequence, type SequenceView } from "../sequence-view.js";
 import { progressOf, sagaById, sagasOf } from "../saga.js";
@@ -68,7 +73,15 @@ import {
   type Layout,
   type Point,
 } from "../layout.js";
-import { join, readTrace, resolve, type Selection, type SelectionId, type TraceEvent } from "../selection.js";
+import {
+  idOf,
+  join,
+  readTrace,
+  resolve,
+  type Selection,
+  type SelectionId,
+  type TraceEvent,
+} from "../selection.js";
 
 interface Sources {
   readonly files: readonly { readonly path: string; readonly source: string }[];
@@ -151,6 +164,8 @@ let sagaView: SagaView | undefined;
 let openSaga: SagaIr | undefined;
 let layout: Layout = {};
 let layoutProblems: readonly string[] = [];
+/** Refusals and manifest faults from the last generation. Cleared by the next one, never by a redraw. */
+let generateProblems: readonly string[] = [];
 let forms: Forms = {};
 let formProblems: readonly string[] = [];
 /** The form being filled in, and the payload being built. Reset when the declaration changes. */
@@ -503,6 +518,27 @@ function refreshSagaProgress(): void {
 }
 
 /** Opens or closes the saga drawer. One drawer at a time, as with the other two. */
+/**
+ * Opens or closes the legend.
+ *
+ * Built on first open rather than at startup, because it is a second Cytoscape instance and most
+ * sessions never ask for it — and because Cytoscape measures its container when it is created, so the
+ * panel has to be showing before there is anything to measure.
+ */
+let legend: { destroy(): void } | undefined;
+
+function toggleLegend(force?: boolean): void {
+  const panel = el("legend");
+  const open = force ?? panel.hidden;
+  panel.hidden = !open;
+  if (!open) {
+    legend?.destroy();
+    legend = undefined;
+    return;
+  }
+  legend ??= renderLegend(el("legendCanvas"));
+}
+
 function toggleSaga(force?: boolean): void {
   const open = force ?? sagaPanel.hidden;
   sagaPanel.hidden = !open;
@@ -559,6 +595,9 @@ function applyHighlight(): void {
   view?.highlight(highlight);
   sequence?.highlight(highlight);
   sagaView?.highlight(highlight);
+  dataView?.highlight(highlight);
+  // Scoped to the selection, so selecting elsewhere re-centres it rather than leaving a stale picture.
+  if (!el("data").hidden) showData();
 }
 
 function refreshTransport(): void {
@@ -581,6 +620,31 @@ function refreshTransport(): void {
  * An event with no edge — a saga step, a schedule firing, the clock moving — still highlights what it
  * touched. There is simply nothing travelling, which is the truth about it.
  */
+/**
+ * The caption under the replay: what this event was, in words.
+ *
+ * A dot crossing an edge says that something travelled and nothing about what it was or how it went,
+ * and the alternative to saying so is making the reader read the trace — which is what the replay is
+ * for. Text rather than markup from `narrate`, so a trace someone else wrote cannot inject anything.
+ */
+function caption(event: TraceEvent | undefined): void {
+  const box = el("narrative");
+  if (event === undefined) {
+    box.hidden = true;
+    box.replaceChildren();
+    return;
+  }
+  const { text, bad } = narrate(event);
+  const kind = document.createElement("span");
+  kind.className = "kind";
+  kind.textContent = event.kind;
+  const said = document.createElement("span");
+  said.textContent = text;
+  box.replaceChildren(kind, said);
+  box.classList.toggle("bad", bad);
+  box.hidden = false;
+}
+
 function showEvent(event: TraceEvent): void {
   if (graph === undefined || model === undefined || view === undefined) return;
 
@@ -588,10 +652,12 @@ function showEvent(event: TraceEvent): void {
   if (edge !== undefined) {
     view.send({
       edge: edge.id,
-      durationMs: 360,
+      durationMs: 520,
       ...(isBadEvent(event.kind) ? { bad: true } : {}),
     });
   }
+
+  caption(event);
 
   // The same `resolve` every view uses, so what lights up during a replay is what would light up if you
   // had clicked the thing yourself — in the graph and in the sequence at once.
@@ -625,6 +691,7 @@ function selectRun(name?: string): void {
 function makePlayer(): void {
   player?.dispose();
   view?.clearSends();
+  caption(undefined);
   if (trace.length === 0) {
     player = undefined;
     sequence?.destroy();
@@ -656,7 +723,689 @@ function makePlayer(): void {
 
   refreshTransport();
   refreshSagaProgress();
+  if (!el("data").hidden) showData();
 }
+
+// ---- what this model is ----------------------------------------------------
+
+/**
+ * The README beside the model, drawn in a drawer.
+ *
+ * Read with the rest of the model rather than on demand, because the button that opens it has to know
+ * whether there is anything to open. A model with no prose beside it simply has no button, which is a
+ * truer answer than a panel that turns out to be empty.
+ */
+function showReadme(found: { path: string; text: string } | undefined): void {
+  const button = el("toggleAbout");
+  button.hidden = found === undefined;
+  if (found === undefined) {
+    toggleAbout(false);
+    el("aboutBody").replaceChildren();
+    return;
+  }
+  el("aboutWhere").textContent = found.path;
+  renderMarkdown(parseMarkdown(found.text), el("aboutBody"));
+}
+
+function toggleAbout(force?: boolean): void {
+  const panel = el("about");
+  const open = force ?? panel.hidden;
+  // Nothing to show is nothing to open, however the request arrived.
+  panel.hidden = !open || el("toggleAbout").hidden;
+}
+
+// ---- the data layer --------------------------------------------------------
+
+/**
+ * The fourth view.
+ *
+ * Its own canvas, because the graph is bipartite and that rule is load-bearing — a message is an edge
+ * label there, never a node. What makes this worth having rather than a separate application is the
+ * selection: click a record here and the pipes carrying it light up in the graph, because both views
+ * resolve through the same `resolve` the sequence and saga already use.
+ *
+ * Scoped to the selection by default. The whole type graph of a real model is a hairball, and the
+ * useful question is almost always "what is in this one, and what holds it".
+ */
+let dataView: DataView | undefined;
+
+const dataDepth = (): number => Number(el<HTMLSelectElement>("dataDepth").value);
+
+function dataOptions(): DataOptions {
+  const depth = dataDepth();
+  // `0` means everything, which stays available and is deliberately not the default.
+  if (depth === 0) return {};
+  return selection.k === "declaration" ? { around: selection.id, depth } : {};
+}
+
+function showData(): void {
+  if (model === undefined || el("data").hidden) return;
+
+  const built = buildData(model, dataOptions());
+  // Named from the data graph, not the topology one: the graph draws no messages, so asking it for a
+  // message label gets an id back.
+  let scope = "everything";
+  if (dataDepth() !== 0 && selection.k === "declaration") {
+    const at = selection.id;
+    scope = `around ${built.nodes.find((n) => n.id === at)?.label ?? at}`;
+  }
+  el("dataScope").textContent = scope;
+  el("dataHidden").textContent = built.hidden === 0 ? "" : `${built.hidden} hidden`;
+
+  if (dataView === undefined) {
+    dataView = renderData(el("dataCanvas"), built, {
+      onSelect: (id) => select(id),
+      // A double tap re-centres the neighbourhood, which is how you walk a data model one hop at a time.
+      onFocus: (id) => select(id),
+      // The same menu as the graph's. This is the canvas where it pays off: a code provider writes
+      // files for messages, records and values, which the graph does not draw.
+      onContext: (at, where) => openMenu(at, where),
+    });
+  } else {
+    dataView.update(built);
+  }
+  // The same `resolve` every other view uses, so what lights up here is what lights up there.
+  dataView.highlight(resolve(join(model, trace), selection));
+}
+
+function toggleData(force?: boolean): void {
+  const panel = el("data");
+  const open = force ?? panel.hidden;
+  panel.hidden = !open;
+  if (!open) {
+    dataView?.destroy();
+    dataView = undefined;
+    return;
+  }
+  toggleSequence(false);
+  toggleSaga(false);
+  showData();
+}
+
+// ---- opening another model -------------------------------------------------
+
+/**
+ * Browsing for a model and opening it.
+ *
+ * The server does the reading and the re-pointing; this only asks. That is what keeps everything else
+ * working across an open — the watcher, `layout.json`, `/mutate` — because none of them ever learn that
+ * the model changed, only that the files did.
+ */
+let browsingAt: string | undefined;
+
+async function browseTo(at?: string): Promise<void> {
+  const state = el("openState");
+  const list = el("openList");
+  const where = el("openAt");
+  const here = el<HTMLButtonElement>("openHere");
+
+  state.textContent = "";
+  state.classList.remove("bad");
+
+  const response = await fetch(at === undefined ? "/browse" : `/browse?at=${encodeURIComponent(at)}`);
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { problem?: string };
+    state.textContent = body.problem ?? `could not read that: ${response.status}`;
+    state.classList.add("bad");
+    return;
+  }
+
+  const body = (await response.json()) as {
+    at: string;
+    parent?: string;
+    here: { models: number; capped: boolean };
+    entries: { name: string; path: string; models: number; capped: boolean }[];
+  };
+  browsingAt = body.at;
+  where.textContent = body.at;
+
+  const count = (n: number, capped: boolean): string =>
+    n === 0 ? (capped ? "none found yet" : "") : `${n}${capped ? "+" : ""} .7k`;
+
+  const rows: HTMLElement[] = [];
+  const row = (label: string, note: string, go: () => void, dim: boolean): void => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.classList.toggle("empty", dim);
+    const name = document.createElement("span");
+    name.textContent = label;
+    const tally = document.createElement("span");
+    tally.className = "count";
+    tally.textContent = note;
+    button.append(name, tally);
+    button.addEventListener("click", go);
+    item.append(button);
+    rows.push(item);
+  };
+
+  if (body.parent !== undefined) row("..", "", () => void browseTo(body.parent), true);
+  for (const entry of body.entries) {
+    row(`${entry.name}/`, count(entry.models, entry.capped), () => void browseTo(entry.path), entry.models === 0);
+  }
+  list.replaceChildren(...rows);
+
+  here.textContent = body.here.models === 0 ? "no models here" : `open this folder (${body.here.models})`;
+  here.disabled = body.here.models === 0;
+}
+
+async function openHere(): Promise<void> {
+  if (browsingAt === undefined) return;
+  const state = el("openState");
+  state.textContent = "opening…";
+  state.classList.remove("bad");
+
+  const response = await fetch("/open", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths: [browsingAt] }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { problem?: string };
+    state.textContent = body.problem ?? `could not open that: ${response.status}`;
+    state.classList.add("bad");
+    return;
+  }
+  // The server announces the change and the page reloads off that, exactly as for a file changing on
+  // disk — so there is nothing to do here but get out of the way.
+  toggleOpen(false);
+}
+
+function toggleOpen(force?: boolean): void {
+  const panel = el("open");
+  const open = force ?? panel.hidden;
+  panel.hidden = !open;
+  if (!open) return;
+  // Always re-browsed: the disk may have moved on since this was last looked at.
+  void browseTo(browsingAt);
+}
+
+// ---- generating ------------------------------------------------------------
+
+/**
+ * The right-click menu.
+ *
+ * Three gestures, which is the whole feature: the background means the system, a node means that node,
+ * and a node that is one of several marked means all of them. Marking is Ctrl, Cmd or Shift and a click,
+ * and it is deliberately not the same thing as selecting — the selection drives the sidebar and the
+ * sequence, and teaching those to mean "possibly several" would have changed every view that reads it.
+ */
+interface ProviderInfo {
+  readonly name: string;
+  readonly target: string;
+  readonly layouts: readonly string[];
+}
+
+let providers: readonly ProviderInfo[] = [];
+
+async function loadProviders(): Promise<void> {
+  const response = await fetch("/providers");
+  if (!response.ok) return;
+  const body = (await response.json()) as { providers: ProviderInfo[]; problems: string[] };
+  providers = body.providers;
+  if (body.problems.length > 0) {
+    generateProblems = body.problems;
+    report(lastDiagnostics, graph?.unresolved ?? []);
+  }
+}
+
+function closeMenu(): void {
+  el("menu").hidden = true;
+}
+
+/** What a menu item will generate, and how to say it in a heading. */
+/**
+ * A declaration's qualified name from its selection id.
+ *
+ * The graph knows it for what the graph draws, which is services and pipes. For a message or a record
+ * it does not, and the id is `message:shop.orders.PlaceOrder` rather than a qualified name — so
+ * falling back to it whole would send `any:message:shop.orders.PlaceOrder` to the run, which matches
+ * nothing and would make every generation from the data view silently empty.
+ */
+function qnameOf(id: SelectionId): string {
+  const drawn = whole === undefined ? undefined : nodeFor(whole, id)?.qname;
+  if (drawn !== undefined) return drawn;
+  const at = id.indexOf(":");
+  return at < 0 ? id : id.slice(at + 1);
+}
+
+function scopeOf(at: { id?: SelectionId; marked: readonly SelectionId[] }): {
+  only: string[];
+  label: string;
+} {
+  const qname = qnameOf;
+
+  if (at.id !== undefined && at.marked.length > 1 && at.marked.includes(at.id)) {
+    return { only: at.marked.map(qname), label: `${at.marked.length} marked` };
+  }
+  if (at.id !== undefined) return { only: [qname(at.id)], label: qname(at.id) };
+  return { only: [], label: "the whole system" };
+}
+
+function openMenu(
+  at: { id?: SelectionId; marked: readonly SelectionId[] },
+  where: { x: number; y: number },
+): void {
+  const menu = el("menu");
+  const { only, label } = scopeOf(at);
+
+  const heading = document.createElement("header");
+  heading.textContent = label;
+  const rows: HTMLElement[] = [heading];
+
+  if (providers.length === 0) {
+    const empty = document.createElement("i");
+    // A model with no `.7k/build.json` is a model nobody has asked to generate yet, which is a state
+    // rather than a fault.
+    empty.textContent = "no providers registered in .7k/build.json";
+    rows.push(empty);
+  }
+
+  for (const provider of providers) {
+    rows.push(
+      item(`generate ${provider.name}`, provider.target, () => void generate(only, label, provider.name)),
+    );
+  }
+  if (providers.length > 1) {
+    rows.push(item("generate everything", "every provider in the manifest", () => void generate(only, label)));
+  }
+
+  menu.replaceChildren(...rows);
+  menu.hidden = false;
+  // Placed after it is shown, because clamping it to the window needs its size.
+  const box = menu.getBoundingClientRect();
+  // `#menu` is positioned within `main`, and `where` is on the page, so the two have to be reconciled.
+  const main = (el("graph").parentElement ?? el("graph")).getBoundingClientRect();
+  const x = where.x - main.left;
+  const y = where.y - main.top;
+  menu.style.left = `${Math.max(0, Math.min(x, main.width - box.width - 8))}px`;
+  menu.style.top = `${Math.max(0, Math.min(y, main.height - box.height - 8))}px`;
+}
+
+function item(label: string, hint: string, go: () => void): HTMLElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  const name = document.createElement("span");
+  name.textContent = label;
+  const note = document.createElement("i");
+  note.textContent = hint;
+  button.append(name, note);
+  button.addEventListener("click", () => {
+    closeMenu();
+    go();
+  });
+  return button;
+}
+
+/**
+ * Plans and shows. There is no third step.
+ *
+ * `plan` touches no disk, which is the whole of what Spider does with a provider: the generated text
+ * is something to read here and to write with `7k generate`, where the atomicity and the drift check
+ * already live.
+ */
+async function generate(only: readonly string[], label: string, provider?: string): Promise<void> {
+  status.textContent = `generating ${label}…`;
+  const planned = await fetch("/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ only, ...(provider === undefined ? {} : { provider }) }),
+  });
+  const outcome = (await planned.json()) as Outcome;
+
+  generateProblems = [
+    ...outcome.problems,
+    ...outcome.refusals.map((r) => `${r.provider} refused ${r.at}: ${r.declared} — ${r.because}`),
+  ];
+  report(lastDiagnostics, graph?.unresolved ?? []);
+
+  if (outcome.files.length === 0 && outcome.refusals.length === 0 && outcome.problems.length === 0) {
+    // A plan that succeeded and produced nothing is not a failure: no registered provider writes
+    // anything for what was asked. Saying so is better than opening an empty preview.
+    status.classList.remove("bad");
+    status.textContent = `${label}: nothing to generate — no provider emits for it`;
+    return;
+  }
+
+  status.classList.remove("bad");
+  status.textContent = `${label}: ${outcome.files.length} file${outcome.files.length === 1 ? "" : "s"} to review`;
+  openPreview(label, outcome);
+}
+
+/**
+ * What a run would produce, as documents to read.
+ *
+ * **Spider shows generated code and never writes it.** `plan` is a pure function of the model, the
+ * names and the options, so stopping at the plan costs nothing — and the alternative cost something
+ * real: a write route on a long-lived local server is reachable by any page you have open, because
+ * binding to loopback keeps other *machines* out and nothing else. `7k generate` is the writer, where
+ * the atomicity, the drift check and `--check` already live.
+ *
+ * So this is the reading. One card per file, clamped to three rows until it is opened, and a header
+ * carrying what the CLI prints and then throws away: the language, when it was generated, and — the
+ * part nobody could see until now — the **losses**. Every provider declares what the model states that
+ * its artifact cannot carry, and `plan` used to drop them. Beside the code is where they mean
+ * something.
+ */
+interface Loss {
+  readonly construct: string;
+  readonly at: string;
+  readonly fidelity: string;
+  readonly detail: string;
+}
+
+interface Planned {
+  readonly path: string;
+  readonly content: string;
+  readonly provider: string;
+  readonly draft: boolean;
+  /** The declarations it came from, qualified — provenance the provider reported. */
+  readonly from: readonly string[];
+  /** What the model states that this artifact does not carry. */
+  readonly losses: readonly Loss[];
+  /** How it compares with what is already on disk. */
+  readonly freshness: "new" | "same" | "changed";
+}
+
+interface Refusal {
+  readonly provider: string;
+  readonly at: string;
+  readonly declared: string;
+  readonly because: string;
+}
+
+interface Outcome {
+  readonly ok: boolean;
+  readonly files: readonly Planned[];
+  readonly drift: Readonly<Record<"new" | "same" | "changed", number>>;
+  readonly refusals: readonly Refusal[];
+  readonly problems: readonly string[];
+}
+
+function closePreview(): void {
+  el("preview").hidden = true;
+}
+
+/**
+ * What a file is written in, by its extension.
+ *
+ * The provider's own `target` says "C# 12 / .NET 8", which is right for the provider and wrong for the
+ * README it also emits. The extension is what the file is.
+ */
+const LANGUAGES: Readonly<Record<string, string>> = {
+  cs: "C#",
+  sql: "T-SQL",
+  bicep: "Bicep",
+  bicepparam: "Bicep parameters",
+  json: "JSON",
+  ps1: "PowerShell",
+  sh: "Shell",
+  md: "Markdown",
+  yaml: "YAML",
+  yml: "YAML",
+  ts: "TypeScript",
+  tf: "Terraform",
+  "7k": "7K",
+};
+
+export const languageOf = (path: string): string => {
+  const at = path.lastIndexOf(".");
+  const extension = at < 0 ? "" : path.slice(at + 1).toLowerCase();
+  return LANGUAGES[extension] ?? (extension === "" ? "text" : extension);
+};
+
+const clock = (at: Date): string =>
+  [at.getHours(), at.getMinutes(), at.getSeconds()]
+    .map((n) => String(n).padStart(2, "0"))
+    .join(":");
+
+/**
+ * An icon that is there only when it has something to say.
+ *
+ * Which makes its absence information: a card with no warning triangle has no losses, and that is
+ * worth being able to see at a glance across a list of thirty files.
+ */
+function iconFor(
+  into: HTMLElement,
+  card: HTMLElement,
+  label: string,
+  title: string,
+  tone: "loss" | "bad",
+  detail: string,
+): void {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `icon ${tone}`;
+  button.textContent = label;
+  button.title = title;
+
+  const block = document.createElement("p");
+  block.className = "detail";
+  block.textContent = detail;
+  block.hidden = true;
+
+  button.addEventListener("click", (event) => {
+    // Without this the click would also reach the card and toggle the code open.
+    event.stopPropagation();
+    block.hidden = !block.hidden;
+    button.classList.toggle("on", !block.hidden);
+  });
+
+  into.append(button);
+  card.append(block);
+}
+
+const sayLoss = (loss: Loss): string =>
+  `${loss.construct} — ${loss.at} (${loss.fidelity})\n    ${loss.detail}`;
+
+const sayRefusal = (refusal: Refusal): string =>
+  `${refusal.provider} refused ${refusal.at}\n    ${refusal.declared}\n    ${refusal.because}`;
+
+/** A plain icon with no detail of its own: copy, dismiss. */
+function actionFor(
+  into: HTMLElement,
+  label: string,
+  title: string,
+  run: () => void,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon";
+  button.textContent = label;
+  button.title = title;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    run();
+  });
+  into.append(button);
+  return button;
+}
+
+/** One file, as a card: a header of facts and icons, and the code under it. */
+function documentCard(file: Planned, at: Date, refusals: readonly Refusal[]): HTMLElement {
+  const card = document.createElement("li");
+  card.className = "doc";
+  card.classList.add(file.freshness);
+  card.classList.toggle("draft", file.draft);
+
+  const header = document.createElement("header");
+
+  const path = document.createElement("span");
+  path.className = "path";
+  path.textContent = file.path;
+  path.title = file.path;
+  header.append(path);
+
+  const about = document.createElement("span");
+  about.className = "about";
+  // What it is, who made it, and when — the facts the CLI prints once and throws away.
+  about.textContent = `${languageOf(file.path)} · ${file.provider} · ${clock(at)}`;
+  header.append(about);
+
+  if (file.freshness !== "new") {
+    const mark = document.createElement("span");
+    mark.className = "mark";
+    mark.textContent = file.freshness === "changed" ? "changed" : "unchanged";
+    mark.title =
+      file.freshness === "changed"
+        ? "what is on disk differs from this"
+        : "what is on disk is already this";
+    header.append(mark);
+  }
+
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  header.append(spacer);
+
+  if (file.losses.length > 0) {
+    iconFor(
+      header,
+      card,
+      `⚠ ${file.losses.length}`,
+      `${file.losses.length} thing${file.losses.length === 1 ? "" : "s"} the model states that this file does not carry`,
+      "loss",
+      file.losses.map(sayLoss).join("\n\n"),
+    );
+  }
+
+  // A draft exists only because something was refused, so the refusal belongs on it.
+  const mine = file.draft ? refusals.filter((r) => file.from.includes(r.at)) : [];
+  if (mine.length > 0) {
+    iconFor(
+      header,
+      card,
+      `⨯ ${mine.length}`,
+      "this file exists only to carry a refusal, and would not be written outside a draft",
+      "bad",
+      mine.map(sayRefusal).join("\n\n"),
+    );
+  }
+
+  actionFor(header, "⧉", "copy this to the clipboard", () => {
+    void navigator.clipboard.writeText(file.content).then(
+      () => {
+        status.classList.remove("bad");
+        status.textContent = `copied ${file.path}`;
+      },
+      () => {
+        status.classList.add("bad");
+        status.textContent = `could not copy ${file.path}`;
+      },
+    );
+  });
+
+  // Dismiss, not delete: nothing here is on disk, so there is nothing to remove but the card. Saying
+  // "dismiss" in the tooltip matters — a bin beside generated code reads like it deletes a file.
+  actionFor(header, "🗑", "dismiss this from the list — nothing on disk is touched", () => {
+    card.remove();
+    const left = el("previewDocs").children.length;
+    el("previewWhat").textContent = `${left} file${left === 1 ? "" : "s"} to review`;
+  });
+
+  card.append(header);
+
+  const code = document.createElement("pre");
+  code.textContent = file.content;
+  card.append(code);
+
+  // Three rows is enough to tell one file from another and not enough to scroll past. Opening it
+  // also selects what it came from, which lights the declarations up in every other view at once —
+  // the whole reason this is a panel in Spider and not a file browser somewhere else.
+  const toggle = (): void => {
+    const open = card.classList.toggle("open");
+    if (!open) return;
+    const first = file.from[0];
+    if (first === undefined) return;
+    const found = model?.decls.find((d) => qualify(d.id) === first);
+    if (found !== undefined) select(idOf(found));
+  };
+  code.addEventListener("click", () => {
+    if (!card.classList.contains("open")) toggle();
+  });
+  path.addEventListener("click", toggle);
+
+  return card;
+}
+
+/**
+ * The run's own troubles, which belong to no file.
+ *
+ * A manifest that does not parse and a provider that refused outright produced nothing to attach a
+ * header to, and putting them in a card of their own is better than a footer nobody reads.
+ */
+function runCard(outcome: Outcome): HTMLElement | undefined {
+  const orphaned = outcome.refusals.filter(
+    (r) => !outcome.files.some((f) => f.draft && f.from.includes(r.at)),
+  );
+  if (orphaned.length === 0 && outcome.problems.length === 0) return undefined;
+
+  const card = document.createElement("li");
+  card.className = "doc";
+
+  const header = document.createElement("header");
+  const path = document.createElement("span");
+  path.className = "path";
+  path.textContent = "the run";
+  header.append(path);
+
+  const about = document.createElement("span");
+  about.className = "about";
+  about.textContent = "nothing was produced for these";
+  header.append(about);
+
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  header.append(spacer);
+
+  if (outcome.problems.length > 0) {
+    iconFor(
+      header,
+      card,
+      `✖ ${outcome.problems.length}`,
+      "problems with the run itself — a manifest, a provider, a selector",
+      "bad",
+      outcome.problems.join("\n"),
+    );
+  }
+
+  if (orphaned.length > 0) {
+    iconFor(
+      header,
+      card,
+      `⨯ ${orphaned.length}`,
+      "a provider refused, so nothing was produced for it",
+      "bad",
+      orphaned.map(sayRefusal).join("\n\n"),
+    );
+  }
+
+  card.append(header);
+  return card;
+}
+
+function openPreview(label: string, outcome: Outcome): void {
+  const at = new Date();
+
+  el("previewWhat").textContent = `${label} — ${outcome.files.length} file${
+    outcome.files.length === 1 ? "" : "s"
+  }`;
+
+  const run = runCard(outcome);
+  el("previewDocs").replaceChildren(
+    ...(run === undefined ? [] : [run]),
+    ...outcome.files.map((file) => documentCard(file, at, outcome.refusals)),
+  );
+
+  const drift = [
+    outcome.drift.changed > 0 ? `${outcome.drift.changed} changed` : undefined,
+    outcome.drift.new > 0 ? `${outcome.drift.new} not on disk` : undefined,
+    outcome.drift.same > 0 ? `${outcome.drift.same} already current` : undefined,
+  ].filter((p) => p !== undefined);
+  el("previewState").textContent = drift.join(" · ");
+
+  el("preview").hidden = false;
+}
+
 
 // ---- compose ---------------------------------------------------------------
 
@@ -1058,6 +1807,7 @@ function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[
     ...traceProblems.map((p) => `trace  ${p}`),
     ...formProblems.map((p) => `forms.json  ${p}`),
     ...layoutProblems.map((p) => `layout  ${p}`),
+    ...generateProblems.map((p) => `generate  ${p}`),
     ...warnings.map((d) => `warning  ${whereIs(d)}  ${d.code}: ${d.message}`),
   ];
   problemsText.textContent = lines.join("\n");
@@ -1069,6 +1819,7 @@ function report(diagnostics: readonly Diagnostic[], unresolved: readonly string[
   if (traceProblems.length > 0) counts.push(`${traceProblems.length} in the trace`);
   if (formProblems.length > 0) counts.push(`${formProblems.length} in forms.json`);
   if (layoutProblems.length > 0) counts.push(`${layoutProblems.length} saving the layout`);
+  if (generateProblems.length > 0) counts.push(`${generateProblems.length} generating`);
   if (warnings.length > 0) counts.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
 
   // "no problems" rather than nothing, for the same reason an empty loss profile is still written out in
@@ -1120,6 +1871,7 @@ function redraw(): void {
       onSelect: select,
       onFocus: focusOnId,
       onMoved: (positions) => void remember(positions),
+      onContext: (at, where) => openMenu(at, where),
       saved: viewOf(layout, layoutView()).nodes,
     });
   } else {
@@ -1166,13 +1918,14 @@ function fillLenses(): void {
 }
 
 async function load(): Promise<void> {
-  const [sourcesResponse, viewsResponse, traceResponse, formsResponse, layoutResponse] =
+  const [sourcesResponse, viewsResponse, traceResponse, formsResponse, layoutResponse, readmeResponse] =
     await Promise.all([
     fetch("/sources.json"),
     fetch("/views.json"),
     fetch("/trace.ndjson"),
     fetch("/forms.json"),
     fetch("/layout.json"),
+    fetch("/readme.json"),
     ]);
 
   if (!sourcesResponse.ok) {
@@ -1206,6 +1959,13 @@ async function load(): Promise<void> {
     // "deleting it loses saved positions and nothing else".
     layoutProblems = parsed.problems;
   }
+
+  // 204 means there is no README beside this model, which is a state and not a failure.
+  showReadme(
+    readmeResponse.status === 200
+      ? ((await readmeResponse.json()) as { path: string; text: string })
+      : undefined,
+  );
 
   if (formsResponse.ok) {
     const parsed = parseForms(await formsResponse.text());
@@ -1248,6 +2008,21 @@ paletteInput.addEventListener("keydown", (e) => {
 });
 
 el("toggleSequence").addEventListener("click", () => toggleSequence());
+document.addEventListener("click", (e) => {
+  if (!el("menu").hidden && !el("menu").contains(e.target as Node)) closeMenu();
+});
+void loadProviders();
+el("previewClose").addEventListener("click", () => closePreview());
+el("toggleData").addEventListener("click", () => toggleData());
+el("dataClose").addEventListener("click", () => toggleData(false));
+el("dataDepth").addEventListener("change", () => showData());
+el("toggleAbout").addEventListener("click", () => toggleAbout());
+el("aboutClose").addEventListener("click", () => toggleAbout(false));
+el("toggleOpen").addEventListener("click", () => toggleOpen());
+el("openClose").addEventListener("click", () => toggleOpen(false));
+el("openHere").addEventListener("click", () => void openHere());
+el("toggleLegend").addEventListener("click", () => toggleLegend());
+el("legendClose").addEventListener("click", () => toggleLegend(false));
 el("toggleSaga").addEventListener("click", () => toggleSaga());
 el("sagaClose").addEventListener("click", () => toggleSaga(false));
 sagaWhich.addEventListener("change", () => {
@@ -1310,6 +2085,14 @@ document.addEventListener("keydown", (e) => {
 
   // Escape undoes the most recent narrowing first: the focus, then the selection. A single key that
   // cleared both would make it impossible to keep a focus while looking at something inside it.
+  if (e.key === "Escape" && !el("menu").hidden) {
+    closeMenu();
+    return;
+  }
+  if (e.key === "Escape" && !el("preview").hidden) {
+    closePreview();
+    return;
+  }
   if (e.key === "Escape") {
     // The most recent thing first, as everywhere else: a proposal, then a half-made connection, then the
     // focus, then the selection.
@@ -1321,10 +2104,30 @@ document.addEventListener("keydown", (e) => {
       armConnect(false);
       return;
     }
+    if (!el("data").hidden) {
+      toggleData(false);
+      return;
+    }
+    if (!el("about").hidden) {
+      toggleAbout(false);
+      return;
+    }
+    if (!el("open").hidden) {
+      toggleOpen(false);
+      return;
+    }
+    if (!el("legend").hidden) {
+      toggleLegend(false);
+      return;
+    }
     if (isFocused(focus)) toggleFocus();
     else select(undefined);
     return;
   }
+  if (e.key === "?") toggleLegend();
+  if (e.key === "o" || e.key === "O") toggleOpen();
+  if (e.key === "a" || e.key === "A") toggleAbout();
+  if (e.key === "d" || e.key === "D") toggleData();
   if (e.key === "f" || e.key === "F") toggleFocus();
   if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
   if ((e.key === "g" || e.key === "G") && !el("toggleSaga").hidden) toggleSaga();
@@ -1344,6 +2147,18 @@ void load();
 
 // The server watches the files and says when one changed. Re-reading and redrawing is cheap, and the
 // layout is deterministic, so an unchanged part of the model lands back where it was.
+// The drawing's colours are the page's own, resolved out of CSS once at render time because Cytoscape
+// cannot read a custom property itself. So a scheme the reader switches *after* the graph was drawn
+// has to be handed back in, or the canvas keeps the old palette while everything around it changes.
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  view?.retheme();
+  // Rebuilt rather than restyled: it is small, and nothing in it is worth keeping across a repaint.
+  if (legend !== undefined) {
+    legend.destroy();
+    legend = renderLegend(el("legendCanvas"));
+  }
+});
+
 const events = new EventSource("/events");
 events.addEventListener("changed", () => {
   void load();
