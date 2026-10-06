@@ -262,6 +262,17 @@
 
       main { position: relative; min-height: 0; }
       #graph { position: absolute; inset: 0; }
+      /* The line that follows the pointer while a connection is being dragged. Dashed, because it is a
+         proposal and not an edge: nothing is written until the preview is accepted. */
+      .connectBand { z-index: 2; }
+      .connectBand line {
+        stroke: var(--accent);
+        stroke-width: 2;
+        stroke-dasharray: 5 4;
+        stroke-linecap: round;
+      }
+      /* While the mode is armed, the pointer says what a drag will do. */
+      body.connecting #graph { cursor: crosshair; }
 
       /* The other side of the flip. Same box as the graph, because that is what a flip means: one
          pane, two drawings of one model, and the drawers to the right keep working over either. */
@@ -559,6 +570,34 @@
       #aboutBody a { color: var(--accent); }
 
       /* The right-click menu. Placed in script, because where it opens is where the pointer was. */
+      /* The button first, because it is the verb; the dropdown after it is the noun. */
+      .addNew { display: inline-flex; align-items: stretch; gap: 0; }
+      .addNew button {
+        border-top-right-radius: 0;
+        border-bottom-right-radius: 0;
+        padding: 0 8px;
+        font-weight: 600;
+      }
+      .addNew select {
+        border-top-left-radius: 0;
+        border-bottom-left-radius: 0;
+        margin-left: -1px;
+      }
+
+      /* The one form that is not rebuilt as you type: see `startAdd`. */
+      #addForm { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+      #addForm input { flex: 1; min-width: 0; }
+      #addForm input,
+      #addForm select {
+        font: inherit;
+        padding: 3px 6px;
+        background: var(--bg);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+      }
+      #addForm input.bad { border-color: var(--bad); }
+
       #menu {
         position: absolute;
         z-index: 7;
@@ -1038,6 +1077,15 @@
       <button type="button" id="toggleSaga" title="the saga being declared (g)" hidden>
         saga
       </button>
+      <span class="addNew">
+        <button type="button" id="addNew" title="add one of these to the model">+</button>
+        <select id="addWhat" title="what to add">
+          <option value="service">service</option>
+          <option value="queue">queue</option>
+          <option value="topic">topic</option>
+          <option value="stream">stream</option>
+        </select>
+      </span>
       <button type="button" id="toggleCode" title="the model as text (t)">code</button>
       <button type="button" id="toggleGenerated" title="the generated code (v)" hidden>generated</button>
       <button type="button" id="toggleCompose" title="build a message (c)">compose</button>

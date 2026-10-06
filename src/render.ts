@@ -62,6 +62,18 @@ export interface RenderOptions {
     /** Where the pointer was, in client coordinates. The host decides what that means on its page. */
     at_page: { readonly x: number; readonly y: number },
   ) => void;
+  /**
+   * Called when a line is dragged from one node and dropped on another.
+   *
+   * A second way to say what clicking one node and then the other already says, and the host decides
+   * what it means — which end is which is the host's question, because the model is bipartite and the
+   * direction follows from the kinds (`connect-ui.ts`).
+   *
+   * Both ways stay, deliberately. `connect-ui.ts` chose click-then-click because it works on a touch
+   * screen and from the keyboard, and a drag does neither; that argument is still true, so this is an
+   * addition rather than a replacement.
+   */
+  readonly onConnect?: (from: SelectionId, to: SelectionId) => void;
 }
 
 /** What a message looks like going past. */
@@ -90,6 +102,13 @@ export interface Rendered {
   positions(): Readonly<Record<SelectionId, Point>>;
   /** Re-reads the palette and restyles, for when the host's colour scheme changes under us. */
   retheme(): void;
+  /**
+   * Whether a plain drag draws a connection rather than moving a node.
+   *
+   * Holding shift always does, with no mode to be in; this is what the `n` key arms, so the discoverable
+   * route and the quick one are the same gesture.
+   */
+  setConnecting(on: boolean): void;
   /** The multi-selection, in the order it was built. */
   marked(): readonly SelectionId[];
   /** Replaces it. Anything the graph does not draw is dropped, so a stale id cannot linger. */
@@ -486,6 +505,79 @@ export function renderGraph(
     tip.hidden = false;
   };
 
+  // ---- dragging a connection ------------------------------------------------
+  //
+  // No extension: the one Cytoscape has for edge handles brings its own interaction model and its own
+  // opinions about what a node looks like. All this needs is a line that follows the pointer, and a
+  // line is cheaper to draw than a dependency is to keep.
+  //
+  // The band is an SVG over the canvas rather than a temporary element in the graph, because a real
+  // element would be laid out, highlighted, counted and saved like everything else, and every one of
+  // those would have to learn to ignore it.
+  let connecting = false;
+  let dragFrom: SelectionId | undefined;
+
+  const band = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  band.setAttribute("class", "connectBand");
+  band.style.position = "absolute";
+  band.style.inset = "0";
+  band.style.pointerEvents = "none";
+  band.style.display = "none";
+  const bandLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  band.append(bandLine);
+  container.append(band);
+
+  const endDrag = (): void => {
+    dragFrom = undefined;
+    band.style.display = "none";
+    // Only when the host let them move in the first place.
+    if (options.onMoved !== undefined) cy.nodes().grabify();
+  };
+
+  if (options.onConnect !== undefined) {
+    const onConnect = options.onConnect;
+
+    cy.on("mousedown", "node", (e) => {
+      const native = e.originalEvent as MouseEvent | undefined;
+      const wanted = connecting || native?.shiftKey === true;
+      if (!wanted || native?.button !== 0) return;
+
+      // A node that cannot be dragged away cannot also be dragged from, so the grab is taken off for
+      // the duration rather than fought with afterwards.
+      cy.nodes().ungrabify();
+      dragFrom = e.target.id() as SelectionId;
+      const at = e.target.renderedPosition() as { x: number; y: number };
+      bandLine.setAttribute("x1", String(at.x));
+      bandLine.setAttribute("y1", String(at.y));
+      bandLine.setAttribute("x2", String(at.x));
+      bandLine.setAttribute("y2", String(at.y));
+      band.style.display = "";
+    });
+
+    cy.on("mousemove", (e) => {
+      if (dragFrom === undefined) return;
+      const at = e.renderedPosition as { x: number; y: number };
+      bandLine.setAttribute("x2", String(at.x));
+      bandLine.setAttribute("y2", String(at.y));
+    });
+
+    cy.on("mouseup", (e) => {
+      const from = dragFrom;
+      if (from === undefined) return;
+      const onNode = e.target !== cy && typeof e.target.isNode === "function" && e.target.isNode();
+      const to = onNode ? (e.target.id() as SelectionId) : undefined;
+      endDrag();
+      // Dropped on itself or on the background: nothing was asked for, so nothing is said.
+      if (to !== undefined && to !== from) onConnect(from, to);
+    });
+
+    // Let go outside the canvas and the band would otherwise follow the pointer around forever.
+    container.addEventListener("mouseleave", endDrag);
+    window.addEventListener("mouseup", () => {
+      if (dragFrom !== undefined) endDrag();
+    });
+  }
+
   cy.on("mouseover", "edge", (e) => showTip(e.target as cytoscape.EdgeSingular));
   cy.on("mouseout", "edge", hideTip);
   // Anything that moves the drawing under the pointer invalidates where this was put. Hidden rather
@@ -708,6 +800,10 @@ export function renderGraph(
     clearSends,
     retheme() {
       cy.style(resolveStyle(STYLE, paletteOf(container)) as never);
+    },
+    setConnecting(on) {
+      connecting = on;
+      if (!on) endDrag();
     },
     marked: () => [...marked],
     setMarked(ids) {

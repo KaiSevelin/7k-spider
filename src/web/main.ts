@@ -20,6 +20,8 @@
 import {
   applyAll,
   buildWorkspace,
+  addPipe,
+  addService,
   connectEmit,
   connectReact,
   hasErrors,
@@ -1737,8 +1739,9 @@ function armConnect(on?: boolean): void {
   connectingFrom = undefined;
   document.body.classList.toggle("connecting", armed);
   el("connect").classList.toggle("armed", armed);
+  view?.setConnecting(armed);
   if (armed) {
-    status.textContent = "click a service, then a pipe — or a pipe, then a service";
+    status.textContent = "click a service, then a pipe, or drag between them — either order";
   } else {
     redraw();
   }
@@ -1808,13 +1811,23 @@ function buildProposal(pair: Pair, message: string): void {
     pair.direction === "emits" ? connectEmit(where, what) : connectReact(where, what);
 
   proposeWhat.textContent = mutation.describe;
+  proposeBody.replaceChildren();
+  showMutation(mutation, proposeBody);
+}
 
+/**
+ * What a mutation would write, as the preview `20-ir.md` section 7 asks for.
+ *
+ * Shared by connecting and adding, and appended to whatever is already in the container rather than
+ * replacing it — the add flow keeps a form above this, and rebuilding that on every keystroke is the
+ * bug this page already had once, in the composer.
+ */
+function showMutation(mutation: Mutation, into: HTMLElement): void {
   if (mutation.edits.length === 0) {
-    proposeBody.replaceChildren();
     const why = document.createElement("div");
     why.className = "why";
     why.textContent = mutation.diagnostics.map((d) => d.message).join("\n") || "nothing to do";
-    proposeBody.append(why);
+    into.append(why);
     proposeState.textContent = "";
     proposeApply.hidden = true;
     proposal = undefined;
@@ -1824,7 +1837,6 @@ function buildProposal(pair: Pair, message: string): void {
   const applied = applyAll(sources, mutation.edits);
   proposal = previewOf(mutation, sources, applied);
 
-  proposeBody.replaceChildren();
   for (const show of proposal.shows) {
     const where2 = document.createElement("div");
     where2.className = "where";
@@ -1832,7 +1844,7 @@ function buildProposal(pair: Pair, message: string): void {
     const pre = document.createElement("pre");
     if (show.removing) pre.classList.add("removing");
     pre.textContent = show.text;
-    proposeBody.append(where2, pre);
+    into.append(where2, pre);
   }
 
   // A diagnostic that is not an error does not stop the write; it is said anyway, because an edit that
@@ -1842,7 +1854,7 @@ function buildProposal(pair: Pair, message: string): void {
     const why = document.createElement("div");
     why.className = "why";
     why.textContent = mutation.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n");
-    proposeBody.append(why);
+    into.append(why);
   }
 
   proposeState.textContent = isPossible(mutation) ? "" : "this cannot be written as it stands";
@@ -1888,6 +1900,104 @@ async function applyProposal(): Promise<void> {
 
   // Either way: what is on screen should be what is on disk.
   await load();
+}
+
+
+// ---- adding ----------------------------------------------------------------
+
+/**
+ * Adding a declaration, previewed like every other edit.
+ *
+ * The four kinds Core can already write: a service, and a pipe in each of its three shapes. Nothing
+ * here is new machinery — `addService` and `addPipe` have been in `@sevenk/core` all along, with the
+ * package check, the case-folded name clash (D40) and the append already decided there. What was
+ * missing was a way to ask for one.
+ *
+ * **The form is built once and the preview is replaced.** Rebuilding the whole panel as you type is
+ * exactly what made the composer unusable: it replaces the input under the cursor, focus falls back to
+ * the page, and the next letter is read as a shortcut. So the name box and the package picker are made
+ * here, and only the text below them is redrawn.
+ */
+function startAdd(): void {
+  const kind = el<HTMLSelectElement>("addWhat").value;
+  const where = editable();
+  if (where === undefined || model === undefined) {
+    status.classList.add("bad");
+    status.textContent = "no model to add to";
+    return;
+  }
+
+  const packages = [...model.packages.values()]
+    .filter((p) => p.declared && p.file !== undefined)
+    .map((p) => p.name)
+    .sort();
+  if (packages.length === 0) {
+    status.classList.add("bad");
+    status.textContent = "no package with a file to add to";
+    return;
+  }
+
+  proposeWhat.textContent = `add a ${kind}`;
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+
+  const name = document.createElement("input");
+  name.type = "text";
+  // A pipe's name is a plain lowercase identifier and everything else is PascalCase (`10-grammar.md`),
+  // so the placeholder says which this one wants rather than leaving it to be guessed.
+  name.placeholder = kind === "service" ? "Name" : "name";
+  name.autocomplete = "off";
+
+  const pkg = document.createElement("select");
+  for (const option of packages) {
+    const node = document.createElement("option");
+    node.value = option;
+    node.textContent = option;
+    pkg.append(node);
+  }
+  // The package of whatever is selected, when that is a sensible guess, because adding a pipe usually
+  // means adding it beside the thing you were just looking at.
+  const at = selection;
+  const near =
+    at.k === "declaration" ? model.decls.find((d) => idOf(d) === at.id)?.id.pkg : undefined;
+  if (near !== undefined && packages.includes(near)) pkg.value = near;
+
+  form.append(name, pkg);
+
+  const preview = document.createElement("div");
+
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const typed = name.value.trim();
+    name.classList.remove("bad");
+    if (typed === "") {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent = `type a name for the ${kind}`;
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+    const mutation =
+      kind === "service"
+        ? addService(where, { pkg: pkg.value, name: typed })
+        : addPipe(where, { pkg: pkg.value, name: typed, kind: kind as "queue" | "topic" | "stream" });
+
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+    name.classList.toggle("bad", mutation.edits.length === 0);
+  };
+
+  name.addEventListener("input", redraw);
+  pkg.addEventListener("change", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  name.focus();
 }
 
 // ---- search ----------------------------------------------------------------
@@ -2114,6 +2224,18 @@ function redraw(): void {
 
   if (view === undefined) {
     view = renderGraph(el("graph"), graph, {
+      /**
+       * A line dragged from one node to another, which means what clicking the two in order means.
+       *
+       * Shift-drag always, and a plain drag once `n` has armed it — so the discoverable route and the
+       * quick one end in the same place. Which end is the service and which the pipe is still decided
+       * by their kinds and not by the direction of the drag: the model is bipartite, so a connection is
+       * one of exactly two things, and dragging backwards says the same thing as dragging forwards.
+       */
+      onConnect: (from, to) => {
+        connectingFrom = from;
+        proposeConnection(to);
+      },
       onSelect: select,
       onFocus: focusOnId,
       onMoved: (positions) => void remember(positions),
@@ -2263,6 +2385,7 @@ document.addEventListener("click", (e) => {
 void loadProviders();
 el("previewClose").addEventListener("click", () => closePreview());
 el("previewAll").addEventListener("click", () => flipAll());
+el("addNew").addEventListener("click", () => startAdd());
 el("toggleCode").addEventListener("click", () => toggleCode());
 el("toggleGenerated").addEventListener("click", () => toggleGenerated());
 el("toggleData").addEventListener("click", () => toggleData());
