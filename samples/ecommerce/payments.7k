@@ -1,0 +1,168 @@
+// Taking the money, and giving it back.
+//
+// Two things live here that are nowhere else in these samples: a pipe that deduplicates in the
+// transport rather than in the handler, and a dead-letter pipe with a name. Both are here because this
+// is the package where a message delivered twice costs somebody money.
+
+package shop.payments
+
+import shop.common
+
+envelopes common.Trace, common.Shop
+
+// ---------------------------------------------------------------- messages
+
+message AuthorisePayment v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+  total:    common.Money
+}
+
+message PaymentAuthorised v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+  total:    common.Money
+}
+
+// The card said no. An outcome rather than an error: a declined card is a normal thing for a shop to
+// meet, and retrying it would only decline again.
+message PaymentDeclined v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+  detail:   string { length 1..200 }
+}
+
+// The inverse of an authorisation. Held money is somebody's money, so it is given back the moment the
+// order it was held for cannot continue.
+message VoidAuthorisation v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+message AuthorisationVoided v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+// ---- the hop that leaves the building -------------------------------------
+
+message ChargeCard v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+  total:    common.Money
+}
+
+message CardCharged v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+message CardRefused v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+  detail:   string { length 1..200 }
+}
+
+message ReleaseHold v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+message HoldReleased v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+// ---------------------------------------------------------------- pipes
+
+// `effectively-once within 24h`, which no other pipe in these samples needs.
+//
+// Every consumer in 7K has to be idempotent whatever the delivery mode says, so this is not a licence
+// to stop deduplicating - `once per orderRef` is still below. It is a second net under the first, in the
+// one place where the handler's own window and the transport's disagreeing is worth paying for: an
+// authorisation replayed a day later against a card that has since been charged.
+//
+// The window has to outlast the retries, or it is deduplication that stops working exactly when
+// duplicates start (`03-topology.md` 2). A day comfortably outlasts the five-minute retry below.
+//
+// `dlq failed` names where a hopeless message goes. Everywhere else in these samples the dead letter is
+// implicit - `<pipe>.dead`, which Spider draws when you tick `dead letters` - and here it is a declared
+// pipe, because somebody has to go and look at the money that did not move.
+pipe commands : queue {
+  delivery  effectively-once within 24h
+  ordering  by shopId
+  carries   AuthorisePayment, VoidAuthorisation
+  dlq       failed
+}
+
+// Where an authorisation that could not be completed ends up. A month, because a payment nobody noticed
+// for a month is a different conversation and the evidence should still be there for it.
+pipe failed : queue {
+  retention 30d
+  // The end of the line. A dead-letter pipe with its own dead-letter pipe is a loop with extra steps.
+  dlq       none
+}
+
+// What actually crosses to the processor. Separate from `commands` because the two sides fail
+// differently: a message on `commands` is this shop's to retry, and one on `outbound` is somebody
+// else's network to wait for.
+pipe outbound : queue {
+  ordering by shopId
+  carries   ChargeCard, ReleaseHold
+}
+
+pipe events : topic {
+  ordering  by shopId
+  retention 30d
+}
+
+// ---------------------------------------------------------------- services
+
+// Holds the shop's own record of what was authorised. Its own service because what the shop believes
+// about a payment has to survive the processor being unreachable.
+service PaymentService {
+  emits PaymentAuthorised   to events
+  emits PaymentDeclined     to events
+  emits AuthorisationVoided to events
+  emits ChargeCard          to outbound
+  emits ReleaseHold         to outbound
+
+  reacts AuthorisePayment from commands {
+    once per orderRef
+    // What the saga awaits is whether the money is secured.
+    replies PaymentAuthorised | PaymentDeclined
+    // And securing it means telling somebody else's network. Nobody waits for this, which is exactly
+    // why it is `issues` and not a second reply (D103).
+    issues  ChargeCard
+  }
+
+  reacts VoidAuthorisation from commands {
+    once per orderRef
+    replies AuthorisationVoided
+    issues  ReleaseHold
+  }
+
+  reacts CardCharged  from events { once per orderRef; replies none }
+  reacts CardRefused  from events { once per orderRef; replies none }
+  reacts HoldReleased from events { once per orderRef; replies none }
+}
+
+// Somebody else's payment processor. Not generated by 7K - only the connection is modelled, because
+// messages cross it. Spider draws it as a boundary marker rather than as a service.
+service CardNetwork @external {
+  emits CardCharged  to events
+  emits CardRefused  to events
+  emits HoldReleased to events
+
+  reacts ChargeCard from outbound {
+    once per orderRef
+    replies CardCharged | CardRefused
+    // Longer than a shop's own retries, because a card network that is slow is usually a card network
+    // that is busy.
+    retry   4 after 15s max 5m
+  }
+
+  reacts ReleaseHold from outbound {
+    once per orderRef
+    replies HoldReleased
+    retry   4 after 15s max 5m
+  }
+}
+
+// Watches the money. Reads what happened and depends on it for nothing, which is what lets the shop
+// reconcile without being in the payment path.
+service PaymentLog {
+  reacts PaymentAuthorised   from events { once per orderRef; replies none }
+  reacts PaymentDeclined     from events { once per orderRef; replies none }
+  reacts AuthorisationVoided from events { once per orderRef; replies none }
+}

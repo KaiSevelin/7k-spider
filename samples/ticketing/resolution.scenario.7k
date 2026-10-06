@@ -1,0 +1,243 @@
+// Scenarios for the support desk, written to be watched rather than only to pass.
+//
+// Each one exercises something a different view has to show: a happy path for the sequence diagram, an
+// eight-hour silence for the timeline, a stage unwound for the saga view, and the hourly sweep for a
+// schedule whose occurrences are the thing being counted.
+
+scenarios for support.desk
+
+// ---------------------------------------------------------------------------
+// A baseline. Scenarios inherit it and override only what they are testing.
+// ---------------------------------------------------------------------------
+
+mockset Working {
+  mock roster.RosterService {
+    on roster.ClaimAgent reply roster.AgentClaimed {
+      assignment: { agent: "agent-14", team: "billing" }
+    } after 200ms
+    on roster.ReleaseAgent reply roster.AgentReleased after 200ms
+  }
+  // Faster than the roster on purpose: the branch declared second finishes first, so the trace shows a
+  // stage joining out of declaration order.
+  mock contact.ContactService {
+    on contact.EmailRequester reply contact.RequesterReached after 100ms
+  }
+  mock SweepService {
+    on SweepStale reply SweepFinished { escalated: 2 } after 2s
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. The happy path: raised, an agent claimed while the requester is told, then
+//    assigned and resolved.
+// ---------------------------------------------------------------------------
+
+scenario TicketResolvedQuickly {
+  seed 1
+  use  Working
+
+  at 0s publish RaiseTicket as Portal
+    with claims   { sub: "ida", scope: "tickets.raise" }
+    with envelope { tenantId: "northwind", actor: "ida" }
+    {
+      ticketRef: "SUP-20451",
+      requester: { name: "Ida Falk", email: "ida@example.com" },
+      subject:   "Invoice 4471 is for the wrong amount",
+      team:      "billing",
+      priority:  "Normal",
+      channel:   "Web"
+    }
+
+  expect  TicketAccepted     on events
+  expect  roster.ClaimAgent  on roster.commands
+  advance 1s
+  expect  AssignTicket on commands
+
+  // The agent works it and says so.
+  at 45m publish TicketResolved as AgentConsole
+    with envelope { tenantId: "northwind", actor: "agent-14" }
+    {
+      ticketRef:  "SUP-20451",
+      assignment: { agent: "agent-14", team: "billing" }
+    }
+
+  advance 1s
+  expect saga Resolution["SUP-20451"].state == complete
+  expect TicketClosed on events
+}
+
+// ---------------------------------------------------------------------------
+// 2. Nobody gets to it. Eight hours of nothing, then the work step times out and
+//    the agent is handed back - which means the claim step's `undo` runs.
+// ---------------------------------------------------------------------------
+
+scenario NobodyResolves {
+  seed 2
+  use  Working
+
+  at 0s publish RaiseTicket as Portal
+    with claims   { sub: "ida", scope: "tickets.raise" }
+    with envelope { tenantId: "northwind", actor: "ida" }
+    {
+      ticketRef: "SUP-20452",
+      requester: { name: "Bo Nyquist", email: "bo@example.com" },
+      subject:   "Cannot reset my password",
+      team:      "accounts",
+      priority:  "High",
+      channel:   "Email"
+    }
+
+  advance 1s
+  expect AssignTicket on commands
+
+  // Past the work step's 8h timeout, and nothing arrives.
+  advance 9h
+  expect roster.ReleaseAgent on roster.commands
+  expect TicketClosed        on events
+  expect saga Resolution["SUP-20452"].state == reject
+}
+
+// ---------------------------------------------------------------------------
+// 3. Everyone on that team is busy, so the ticket is refused before anybody is
+//    assigned anything.
+// ---------------------------------------------------------------------------
+
+scenario NoAgentFree {
+  seed 3
+
+  mock roster.RosterService {
+    on roster.ClaimAgent reply roster.NoAgentAvailable { team: "billing" } after 200ms
+  }
+  // Answers later than the roster refuses, so the rejection arrives while this branch is still
+  // waiting - and its 30s timeout must never fire, because the saga is already over.
+  mock contact.ContactService {
+    on contact.EmailRequester reply contact.RequesterReached after 5s
+  }
+
+  at 0s publish RaiseTicket as Portal
+    with claims   { sub: "ida", scope: "tickets.raise" }
+    with envelope { tenantId: "northwind", actor: "ida" }
+    {
+      ticketRef: "SUP-20453",
+      requester: { name: "Cleo Ahlgren", email: "cleo@example.com" },
+      subject:   "Double charged in March",
+      team:      "billing",
+      priority:  "Urgent",
+      channel:   "Phone"
+    }
+
+  advance 1s
+  expect saga Resolution["SUP-20453"].state == reject
+  // Nobody was handed a ticket that was never taken on.
+  expect no AssignTicket on commands
+}
+
+// ---------------------------------------------------------------------------
+// 4. A ticket raised without the scope for it. Refused before the handler runs,
+//    and never retried: a rejection is not a failure.
+// ---------------------------------------------------------------------------
+
+scenario RaiseWithoutScope {
+  seed 4
+  use  Working
+
+  at 0s publish RaiseTicket as Portal
+    with claims   { sub: "ida", scope: "tickets.read" }
+    with envelope { tenantId: "northwind", actor: "ida" }
+    {
+      ticketRef: "SUP-20454",
+      requester: { name: "Dag Ohlsson", email: "dag@example.com" },
+      subject:   "How do I export my data?",
+      team:      "accounts",
+      priority:  "Low",
+      channel:   "Web"
+    }
+
+  advance 1s
+  expect rejected RaiseTicket at TicketService reason unauthorized
+}
+
+// ---------------------------------------------------------------------------
+// 5. The roster does not answer at all. The claim step's own timeout fires, which
+//    is a different thing from the saga's three-day deadline.
+// ---------------------------------------------------------------------------
+
+scenario RosterNeverAnswers {
+  seed 5
+
+  mock roster.RosterService {
+    on roster.ClaimAgent hang
+  }
+  mock contact.ContactService {
+    on contact.EmailRequester reply contact.RequesterReached after 100ms
+  }
+
+  at 0s publish RaiseTicket as Portal
+    with claims   { sub: "ida", scope: "tickets.raise" }
+    with envelope { tenantId: "northwind", actor: "ida" }
+    {
+      ticketRef: "SUP-20455",
+      requester: { name: "Elsa Wikner", email: "elsa@example.com" },
+      subject:   "The report page is blank",
+      team:      "billing",
+      priority:  "Normal",
+      channel:   "Web"
+    }
+
+  advance 31s
+  expect saga Resolution["SUP-20455"].state == reject
+}
+
+// ---------------------------------------------------------------------------
+// 6. The hourly sweep, three hours running. The gaps are an hour each, which the
+//    timeline marks and the transport does not wait for.
+// ---------------------------------------------------------------------------
+
+scenario SweepRunsHourly {
+  seed 6
+  use  Working
+
+  // Past the third occurrence rather than exactly on it: the sweep itself takes two seconds, and a
+  // window that ends on the tick would count a firing whose answer had not arrived.
+  advance 185m
+  expect SweepStale    on commands count 3
+  expect SweepFinished on events   count 3
+}
+
+// ---------------------------------------------------------------------------
+// 7. The agent is held, and then the requester turns out to be unreachable. The
+//    branch that succeeded is unwound - which only a stage can arrange, and which
+//    is the run the saga view was written to make legible.
+// ---------------------------------------------------------------------------
+
+scenario RequesterUnreachable {
+  seed 7
+  use  Working
+
+  mock contact.ContactService {
+    on contact.EmailRequester reply contact.RequesterUnreachable {
+      detail: "the address bounced"
+    } after 400ms
+  }
+
+  at 0s publish RaiseTicket as Portal
+    with claims   { sub: "ida", scope: "tickets.raise" }
+    with envelope { tenantId: "northwind", actor: "ida" }
+    {
+      ticketRef: "SUP-20456",
+      requester: { name: "Frida Berg", email: "frida@example.invalid" },
+      subject:   "Refund never arrived",
+      team:      "billing",
+      priority:  "High",
+      channel:   "Email"
+    }
+
+  advance 1s
+
+  // `claim` completed at 200ms; `greet` rejected at 400ms. So the agent goes back, and nobody is ever
+  // handed a ticket.
+  expect roster.ReleaseAgent on roster.commands
+  expect no AssignTicket on commands
+  expect saga Resolution["SUP-20456"].state == reject
+  expect TicketClosed on events
+}

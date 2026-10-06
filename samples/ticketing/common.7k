@@ -1,0 +1,82 @@
+// A support desk, in four packages. Spider's second example workspace, and a deliberately different
+// shape from the parcel locker one: that system moves a physical object through a process measured in
+// days; this one moves a *work item* through a process measured in people being available.
+//
+// What the two have in common is only the vocabulary of the views — a boundary, PII that propagates, a
+// lossy pipe, a saga with a parallel stage, a schedule, and a command whose instruction is declared.
+//
+// This package is the shared vocabulary. It declares no messages and no services: it is a dependency of
+// the other three and depends on none of them, so there is no package cycle.
+
+package support.common
+
+label pii
+
+// ---------------------------------------------------------------- values
+
+value TicketRef : string { length 1..32; example "SUP-20451" }
+value AgentRef  : string { length 1..32; example "agent-14" }
+value TeamRef   : string { length 1..32; normalize lower; example "billing" }
+value TenantRef : string { length 1..32; example "northwind" }
+
+// What the requester said the problem is. Long enough to be a problem and short enough to be a summary.
+value Subject   : string { length 1..200; normalize trim, collapseSpace }
+
+// Personal data, labelled once here. It propagates upward from this declaration to every record,
+// message and pipe that carries it (`01-kernel.md` section 6), which is what makes the `PiiFlow` lens
+// in `.7k/views.json` select anything at all.
+@pii value EmailAddress : string { length 5..254; pattern /^[^@\s]+@[^@\s]+$/; example "ida@example.com" }
+@pii value PersonName   : string { length 1..80; normalize trim, collapseSpace }
+
+// How urgent, which is what the sweep below compares an age against.
+enum Priority {
+  Low
+  Normal
+  High
+  Urgent
+}
+
+// How it arrived. Recorded rather than acted on: the desk treats a phone call and an email alike, and
+// the only thing that reads this is the reporting package.
+enum Channel {
+  Email
+  Web
+  Phone
+}
+
+// How a ticket ended. One enum with three members rather than three events, because there is one fact
+// here and a reader should not have to learn which of three names carries it.
+enum Outcome {
+  Resolved
+  Unresolved
+  Abandoned
+}
+
+// ---------------------------------------------------------------- records
+
+record Requester {
+  name:  PersonName
+  email: EmailAddress
+}
+
+// Who is working it, and for which team. Produced by the roster and held by the saga, because the saga
+// is the only thing that knows it has to be given back.
+record Assignment {
+  agent: AgentRef
+  team:  TeamRef
+}
+
+// ---------------------------------------------------------------- envelopes
+//
+// Declared here and spliced into every message of every package that says
+// `envelopes common.Trace, common.Tenancy`. An envelope travels on every hop (D50).
+
+envelope Trace {
+  correlationId: uuid @role(correlation)
+  causationId:   uuid @derive(inbound.id) @role(causation)
+}
+
+envelope Tenancy {
+  tenantId: TenantRef @role(partitionKey)
+  actor:    string    @role(subject) { length 1..64 }
+}

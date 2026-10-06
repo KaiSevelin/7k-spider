@@ -1,0 +1,303 @@
+// The process: an order is placed, the stock is held while the card is authorised, and it is either
+// shipped or everything held for it is given back.
+//
+// This is where the saga and the schedule are, and where the one versioned message is - an event that
+// gained a field, with the upcast that lets a consumer on the old version carry on reading it.
+
+package shop.orders
+
+import shop.common
+import shop.catalog
+import shop.payments
+
+envelopes common.Trace, common.Shop
+
+// ---------------------------------------------------------------- messages
+
+// Crosses the boundary: somebody pressed the button.
+message PlaceOrder v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+  customer: common.Customer
+  lines:    [common.Line] { size 1..50 }
+  total:    common.Money
+
+  // A total in one currency and a line in another is not a rounding question, it is an unanswerable
+  // one. This is the kind of rule the JSON Schema projection cannot express (D90) and the composer
+  // still checks.
+  invariant total.currency == lines[].price.currency
+}
+
+// The order as the rest of the shop hears about it.
+//
+// Versioned on purpose, and the only versioned message in any of these samples. `note` was added in
+// v1.1 - a gift message, which nothing existing needed - so a v1.0 producer is still correct and the
+// upcast below is what makes it readable by a v1.1 consumer.
+message OrderPlaced v1.1 @event {
+  orderRef: common.OrderRef @role(businessKey)
+  customer: common.Customer
+  total:    common.Money
+  note:     common.Note? @since(1.1)
+}
+
+// What a reader of v1.1 should see when a v1.0 producer published. `absent` rather than an empty
+// string: nobody wrote a gift message, which is a different fact from writing an empty one.
+upcast OrderPlaced v1.0 to v1.1 {
+  note = absent
+}
+
+message ShipOrder v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+  customer: common.Customer
+}
+
+// The warehouse says it has gone. Published rather than commanded, because the parcel left a building
+// and the system is only hearing about it.
+message OrderShipped v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+message OrderClosed v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+  outcome:  common.Outcome
+  // Why, where there is a why: the saga's own reason for rejecting.
+  detail:   string? { length 1..200 }
+}
+
+// "Where is my order?" - asked by somebody refreshing a page, so asked constantly and asked twice.
+//
+// A `@query` rather than a `@command`, and the difference is not cosmetic. A deduplication key defaults
+// to the `@role(businessKey)` field, and this has one, so as a command the second refresh would be
+// absorbed and answered with nothing - `deduplicated` in the trace, which looks like the system
+// working. Answering a question twice is correct, so a query carries no key (`02-contract.md` 5.5).
+message WhereIsMyOrder v1.0 @query {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+message OrderWhereabouts v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+  // Absent until something has happened to it, which is the honest shape of an answer to a question
+  // asked a second after the button was pressed.
+  outcome:  common.Outcome?
+}
+
+// Fired by the nightly schedule. The day is the business key, so a timer that fires twice sweeps once.
+message SweepAbandoned v1.0 @command {
+  day: date @role(businessKey)
+}
+
+message SweepFinished v1.0 @event {
+  day:     date @role(businessKey)
+  cleared: int { range 0.. }
+}
+
+// ---------------------------------------------------------------- pipes
+
+// Where the outside publishes. The boundary, and the only pipe an `@external` service writes a command
+// to.
+pipe inbound : queue {
+  ordering by shopId
+  carries   PlaceOrder
+}
+
+pipe commands : queue {
+  ordering by shopId
+  carries   ShipOrder, SweepAbandoned
+}
+
+pipe events : topic {
+  ordering  by shopId
+  retention 30d
+}
+
+pipe reads : queue {
+  ordering  by shopId
+  carries   WhereIsMyOrder
+  retention 1d
+}
+
+// ---------------------------------------------------------------- services
+
+// The shop front. Places orders, and asks after them repeatedly, which is what the query is for.
+service Storefront @external {
+  emits PlaceOrder     to inbound
+  emits WhereIsMyOrder to reads
+
+  reacts OrderClosed from events { once per orderRef; replies none }
+
+  reacts OrderWhereabouts from events {
+    // No key: two identical questions deserve two answers. A query would carry none anyway; saying it
+    // here is for the reader.
+    once per none
+    replies none
+  }
+}
+
+// The people with the boxes. Receives the instruction, and says when it has gone.
+service Warehouse @external {
+  emits OrderShipped to events
+
+  reacts ShipOrder from commands {
+    once per orderRef
+    replies none
+  }
+}
+
+// Accepts orders and hosts the Fulfilment saga.
+service OrderService {
+  emits OrderPlaced to events
+  emits OrderClosed to events
+  emits ShipOrder   to commands
+  emits catalog.ReserveStock      to catalog.commands
+  emits catalog.ReleaseStock      to catalog.commands
+  emits payments.AuthorisePayment to payments.commands
+  emits payments.VoidAuthorisation to payments.commands
+
+  reacts PlaceOrder from inbound {
+    // A claim check that means something here: `inbound` is where an `@external` storefront publishes,
+    // so the sender really is the originator.
+    requires claim.sub == envelope.actor
+             and claim.scope contains "orders.place"
+    // One reply. A handler that starts a saga answers one way, and what became of the order is the
+    // saga's to say - which is why there is a single `OrderClosed` rather than an outcome per terminal
+    // state.
+    replies  OrderPlaced
+  }
+
+  // The saga drives these; the service only has to receive them.
+  reacts OrderShipped from events { once per orderRef; replies none }
+
+  reacts catalog.StockReserved from catalog.events { once per orderRef; replies none }
+  reacts catalog.OutOfStock    from catalog.events { once per orderRef; replies none }
+  reacts catalog.StockReleased from catalog.events { once per orderRef; replies none }
+
+  reacts payments.PaymentAuthorised   from payments.events { once per orderRef; replies none }
+  reacts payments.PaymentDeclined     from payments.events { once per orderRef; replies none }
+  reacts payments.AuthorisationVoided from payments.events { once per orderRef; replies none }
+}
+
+// Owns the nightly sweep. Its own service because a schedule's `send` is routed by the hosting
+// service's `emits`, so whoever holds the recurring work holds the routing for it.
+service SweepService {
+  emits SweepAbandoned to commands
+  emits SweepFinished  to events
+
+  reacts SweepAbandoned from commands {
+    once per day
+    replies SweepFinished
+    retry   3 after 10m max 1h
+  }
+}
+
+// Reads the outcomes, and the one consumer that pins a version range.
+service Reporting {
+  emits OrderWhereabouts to events
+
+  // `accepts v1.x` is what makes the upcast in this file do something: a v1.0 `OrderPlaced` is lifted to
+  // v1.1 on the way in, rather than refused for being a version this handler does not admit. Pinning
+  // `v1.0` exactly would have made every producer bump a deployment problem (`deploy-order`).
+  reacts OrderPlaced from events {
+    accepts v1.x
+    once per orderRef
+    replies none
+  }
+
+  reacts OrderClosed   from events { once per orderRef; replies none }
+  reacts SweepFinished from events { once per day;      replies none }
+
+  // Answers the question. One service answers, because one answer is what a question expects.
+  reacts WhereIsMyOrder from reads {
+    replies OrderWhereabouts
+  }
+}
+
+// ===========================================================================
+// The Process layer.
+// ===========================================================================
+
+// Placing an order is one business transaction: stock is held for it and money is held against it, and
+// if either cannot happen the other has to be given back.
+saga Fulfilment v1.0 {
+
+  start on PlaceOrder keyed by orderRef {
+    customer = message.customer
+    lines    = message.lines
+    total    = message.total
+  }
+
+  state {
+    customer: common.Customer
+    lines:    [common.Line]
+    total:    common.Money
+  }
+
+  // Two preconditions for shipping anything, and neither depends on the other: the goods held, and the
+  // money held. Running them in sequence would make every order wait for a card network before the
+  // shelf was even checked, for no reason the model could point at, so they share a stage
+  // (`04-process.md` 1.3).
+  //
+  // The stage is where compensation gets interesting. If the card is declined after the stock was
+  // reserved, the saga rejects and `reserve` - a sibling that had already completed - is unwound. That
+  // is the run `CardDeclined` in the scenarios exists for.
+  parallel {
+    step reserve {
+      send catalog.ReserveStock { lines = state.lines }
+
+      on catalog.StockReserved
+      on catalog.OutOfStock reject "something went out of stock"
+      on timeout 30s        reject "the catalogue did not answer"
+
+      // Co-located with the step it reverses, and run only if this step completed.
+      undo with catalog.ReleaseStock { lines = state.lines }
+    }
+
+    step authorise {
+      send payments.AuthorisePayment { total = state.total }
+
+      on payments.PaymentAuthorised
+      on payments.PaymentDeclined reject "the card was declined"
+      on timeout 30s              reject "the card network did not answer"
+
+      // Held money is somebody's money. This is the one undo in any of these samples that has to happen
+      // for a reason outside the system.
+      undo with payments.VoidAuthorisation
+    }
+  }
+
+  // Not in the stage above: nothing is shipped until both the goods and the money are secured.
+  step ship {
+    send ShipOrder { customer = state.customer }
+
+    on OrderShipped
+
+    // Two days. Longer than this and the order is not being picked, whatever the warehouse says.
+    on timeout 48h reject "nothing shipped"
+
+    // A parcel that has left the building cannot be recalled by a message.
+    undo none
+  }
+
+  // Longer than the step timeout on purpose: an order stuck for a week is a different problem from one
+  // that missed a picking round, and the two should not look the same.
+  on deadline 168h abandon
+
+  // An enum member travels as its name (`01-kernel.md` 7.1), so it is written as one.
+  on complete send OrderClosed { outcome = "Shipped" }
+
+  // `reject "the card was declined"` would be decoration if nothing could read it back, which is what
+  // the `detail` field is for.
+  on reject   send OrderClosed { outcome = "Cancelled"; detail = terminal.reason }
+
+  on abandon  send OrderClosed { outcome = "Abandoned" }
+}
+
+// Nightly, and `onMissed skip` - the third of the three, after the lockers' `all` and the desk's `once`.
+//
+// Skipping is right here and wrong in both of those: an abandoned-order sweep looks at the orders that
+// are abandoned *now*, so a run that was missed yesterday has nothing of its own to do. Today's sweep
+// sees everything yesterday's would have, which is exactly the condition under which `skip` is honest
+// rather than lossy.
+schedule AbandonedSweep {
+  every    "0 4 * * *" in "Europe/Stockholm"
+  send     SweepAbandoned { day = occurrence.date }
+  onMissed skip
+}

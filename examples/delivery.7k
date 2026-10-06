@@ -200,6 +200,9 @@ service CompartmentService {
   reacts ReleaseCompartment from commands {
     once per parcelRef
     replies CompartmentReleased
+    // Releasing a compartment is also what opens its door. The saga waits for
+    // `CompartmentReleased` and never for this, which is why it is not a reply.
+    issues  lockers.OpenDoor
     // The door has to open for the parcel to come back out, and hardware is flaky.
     retry   4 after 5s max 2m
   }

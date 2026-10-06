@@ -1,0 +1,91 @@
+// Reaching the person who asked.
+//
+// The only package that sends personal data outside, through an `@external` mail vendor. An email
+// address lives here and nowhere else: the desk knows a `Requester` and asks this package to reach
+// them, and never learns how. That fence is the whole reason this is its own package.
+
+package support.contact
+
+import support.common
+
+envelopes common.Trace, common.Tenancy
+
+// ---------------------------------------------------------------- messages
+
+// Asked for by the desk's saga when a ticket is raised: tell them we have it.
+message EmailRequester v1.0 @command {
+  ticketRef: common.TicketRef @role(businessKey)
+  requester: common.Requester
+  subject:   common.Subject
+}
+
+message RequesterReached v1.0 @event {
+  ticketRef: common.TicketRef @role(businessKey)
+}
+
+// A bounced address, a blocked domain, a typo. An outcome rather than an error: a desk whose requester
+// cannot be reached has a real problem to deal with, not a fault to retry.
+message RequesterUnreachable v1.0 @event {
+  ticketRef: common.TicketRef @role(businessKey)
+  detail:    string { length 1..200 }
+}
+
+// The outbound hop. Separate from `EmailRequester` because it crosses the boundary: this is the one
+// message in the workspace that hands an address to somebody else's system.
+message SendEmail v1.0 @command {
+  ticketRef: common.TicketRef @role(businessKey)
+  to:        common.EmailAddress
+  subject:   common.Subject
+}
+
+message EmailSent v1.0 @event {
+  ticketRef: common.TicketRef @role(businessKey)
+}
+
+message EmailRejected v1.0 @event {
+  ticketRef: common.TicketRef @role(businessKey)
+  detail:    string { length 1..200 }
+}
+
+// ---------------------------------------------------------------- pipes
+
+pipe commands : queue {
+  ordering by tenantId
+  carries   EmailRequester, SendEmail
+}
+
+pipe events : topic {
+  ordering  by tenantId
+  retention 7d
+}
+
+// ---------------------------------------------------------------- services
+
+// Composes what a person reads. Its own service because the wording is a decision, and because it is
+// the only thing that needs to see both the ticket and the address.
+service ContactService {
+  emits SendEmail            to commands
+  emits RequesterReached     to events
+  emits RequesterUnreachable to events
+
+  reacts EmailRequester from commands {
+    once per ticketRef
+    // What the saga awaits is whether the person can be reached at all.
+    replies RequesterReached | RequesterUnreachable
+    // And reaching them means sending something. Nobody waits for this, which is exactly why it is
+    // `issues` and not a second reply (D103).
+    issues  SendEmail
+  }
+}
+
+// Somebody else's mail service. Flaky in the ordinary way, so the retry is longer than a desk's.
+service MailGateway @external {
+  emits EmailSent    to events
+  emits EmailRejected to events
+
+  reacts SendEmail from commands {
+    once per ticketRef
+    replies EmailSent | EmailRejected
+    retry   5 after 10s max 5m
+  }
+}

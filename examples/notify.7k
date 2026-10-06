@@ -80,6 +80,8 @@ service NotifyService {
   reacts NotifyRecipient from commands {
     once per parcelRef
     replies none
+    // The saga awaits nothing from this; the text going out is work, not an answer.
+    issues  SendSms
   }
 
   // The only thing that needs to see the phone number is the only thing that can say whether it is

@@ -1,0 +1,108 @@
+// What is on the shelves, and what is held against an order.
+//
+// This is where the `stream` is. Every other pipe in these samples is a queue or a topic, which both
+// answer "who gets this message"; a stream answers a different question - "what happened, from the
+// beginning" - and the shape Spider draws for it is different for exactly that reason.
+
+package shop.catalog
+
+import shop.common
+
+envelopes common.Trace, common.Shop
+
+// ---------------------------------------------------------------- messages
+
+message ReserveStock v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+  lines:    [common.Line] { size 1..50 }
+}
+
+message StockReserved v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+// Not enough of something. An outcome rather than an error, because a shop that sells out is a shop
+// working, and the saga has to be able to react to it.
+message OutOfStock v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+  sku:      common.Sku
+}
+
+// The inverse of a reservation. Taken back when the order it was held for cannot continue.
+message ReleaseStock v1.0 @command {
+  orderRef: common.OrderRef @role(businessKey)
+  lines:    [common.Line] { size 1..50 }
+}
+
+message StockReleased v1.0 @event {
+  orderRef: common.OrderRef @role(businessKey)
+}
+
+// One movement of one SKU. Every change to a stock level is one of these, which is what makes the
+// stream below a complete account rather than a sample of one.
+message StockMoved v1.0 @event {
+  sku:      common.Sku @role(businessKey)
+  delta:    int
+  orderRef: common.OrderRef?
+}
+
+// ---------------------------------------------------------------- pipes
+
+// Reserving is a contention point: two reservations for one shop must not cross, or the last unit is
+// sold twice.
+pipe commands : queue {
+  ordering by shopId
+  carries   ReserveStock, ReleaseStock
+}
+
+pipe events : topic {
+  ordering  by shopId
+  retention 7d
+}
+
+// The stock ledger, and the one `stream` in any of these samples.
+//
+// A topic would deliver each movement to whoever was subscribed at the time, which is enough for
+// anybody reacting to a movement and no use at all to anybody *deriving* a stock level: a reader that
+// starts today cannot know what the level is without the movements that came before. A stream is read
+// from a position, so a new reader - or one rebuilding after a bad deploy - replays from the beginning
+// and arrives at the same number. That is a different guarantee, so it is a different kind of pipe.
+//
+// A year of retention, because the thing being replayed is the whole history and not a recent window.
+pipe movements : stream {
+  ordering  by shopId
+  retention 365d
+  carries   StockMoved
+}
+
+// ---------------------------------------------------------------- services
+
+// Owns the shelves. Its own service because stock is a scarce resource and whoever hands it out has to
+// be the only thing that does.
+service CatalogService {
+  emits StockReserved to events
+  emits OutOfStock    to events
+  emits StockReleased to events
+  emits StockMoved    to movements
+
+  reacts ReserveStock from commands {
+    once per orderRef
+    replies StockReserved | OutOfStock
+  }
+
+  reacts ReleaseStock from commands {
+    once per orderRef
+    replies StockReleased
+  }
+}
+
+// Derives what is on the shelf by replaying the ledger. Nothing here reacts to a movement as news; it
+// folds every movement there has ever been into a number, which is the thing a stream is for.
+service StockReport {
+  reacts StockMoved from movements {
+    // No deduplication: a position in a stream is the reader's own, and replaying from it is the normal
+    // way to rebuild rather than an accident to guard against.
+    once per none
+    replies none
+  }
+}

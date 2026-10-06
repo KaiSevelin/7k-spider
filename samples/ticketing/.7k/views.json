@@ -1,0 +1,28 @@
+{
+  "_comment": "Named lenses for the support desk example. Presentation, not language: a saved filter on the diagram, feeding no analysis. Committed, unlike the other two sidecars, because named lenses are worth sharing while layout coordinates and composer hints are per-developer. Deleting this file loses saved lenses and nothing else. See ../../../docs/design.md section 4.2.",
+
+  "Resolution": {
+    "_why": "The process end to end, with the roster behind a port: what a ticket's life touches, and nothing about how availability is worked out.",
+    "include": ["package:support.desk", "package:support.contact"]
+  },
+
+  "Floor": {
+    "_why": "Who is on duty and what drives it. Everything in the desk package is aggregated into ports, which is what a view from the roster's side looks like.",
+    "include": ["package:support.roster"]
+  },
+
+  "PiiFlow": {
+    "_why": "Where personal data goes, and how little of the system it reaches. Only works because labels propagate: @pii is declared on two values in support.common, and from there it reaches every record, message and pipe that carries them — which here is the contact package and the one message that raises a ticket.",
+    "include": ["label:pii"]
+  },
+
+  "Perimeter": {
+    "_why": "Where the system ends: the portal somebody types into, the console an agent works in, and the mail vendor. `label:external` selects annotations as well as declared labels, which is the only reason this selector can work at all.",
+    "include": ["label:external"]
+  },
+
+  "Lossy": {
+    "_why": "The one pipe that may lose a message, and the things on either side of it. An agent's heartbeat: nothing may depend on it for progress.",
+    "include": ["pipe:support.roster.presence"]
+  }
+}

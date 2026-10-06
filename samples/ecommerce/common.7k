@@ -1,0 +1,76 @@
+// An online shop, in four packages. Spider's third example workspace, and the one with money in it.
+//
+// The parcel lockers move a physical object; the support desk moves a work item. This one moves an
+// *order*, which is the shape most people meet first - and it is here to carry the three things the
+// other two had no honest use for: a `stream` pipe that is read from the beginning, a payment pipe that
+// deduplicates in the transport, and a dead-letter pipe that is named rather than implicit.
+//
+// This package is the shared vocabulary. It declares no messages and no services: it is a dependency of
+// the other three and depends on none of them, so there is no package cycle.
+
+package shop.common
+
+label pii
+
+// ---------------------------------------------------------------- values
+
+value OrderRef    : string { length 1..32; example "ORD-77301" }
+value Sku         : string { length 1..24; normalize upper; example "BK-1194" }
+value CustomerRef : string { length 1..32; example "cust-5512" }
+value ShopRef     : string { length 1..32; example "nordbok" }
+
+// ISO 4217. Three letters, because every amount below has to say which money it is.
+value Currency    : string { length 3; pattern /^[A-Z]{3}$/; example "SEK" }
+
+value Note        : string { length 1..200; normalize trim, collapseSpace }
+
+// Personal data, labelled once here. It propagates upward from this declaration to every record,
+// message and pipe that carries it (`01-kernel.md` section 6), which is what makes the `PiiFlow` lens
+// in `.7k/views.json` select anything at all.
+@pii value EmailAddress  : string { length 5..254; pattern /^[^@\s]+@[^@\s]+$/; example "nils@example.com" }
+@pii value PersonName    : string { length 1..80; normalize trim, collapseSpace }
+@pii value PostalAddress : string { length 1..200; normalize trim, collapseSpace }
+
+// How an order ended. One enum with three members rather than three events, because there is one fact
+// here and a reader should not have to learn which of three names carries it.
+enum Outcome {
+  Shipped
+  Cancelled
+  Abandoned
+}
+
+// ---------------------------------------------------------------- records
+
+// `decimal` and never `float`: money is exact, and a binary fraction is not (`01-kernel.md` 1). The
+// currency travels with the amount, because an amount on its own is not a price.
+record Money {
+  amount:   decimal(18,2) { range 0.. }
+  currency: Currency
+}
+
+record Line {
+  sku:      Sku
+  quantity: int { range 1..100 }
+  price:    Money
+}
+
+record Customer {
+  name:    PersonName
+  email:   EmailAddress
+  address: PostalAddress
+}
+
+// ---------------------------------------------------------------- envelopes
+//
+// Declared here and spliced into every message of every package that says
+// `envelopes common.Trace, common.Shop`. An envelope travels on every hop (D50).
+
+envelope Trace {
+  correlationId: uuid @role(correlation)
+  causationId:   uuid @derive(inbound.id) @role(causation)
+}
+
+envelope Shop {
+  shopId: ShopRef     @role(partitionKey)
+  actor:  CustomerRef @role(subject)
+}

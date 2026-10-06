@@ -1,0 +1,18 @@
+{
+  "out": "generated",
+  "providers": ["@sevenk/csharp"],
+  "names": [
+    { "where": "pipe:*", "style": "kebab" }
+  ],
+  "emit": [
+    {
+      "provider": "csharp",
+      "out": "csharp",
+      "layout": "per-declaration",
+      "options": { "namespace": "Acme" },
+      "rules": [
+        { "where": "message:shop.orders.PlaceOrder", "messageType": "class" }
+      ]
+    }
+  ]
+}

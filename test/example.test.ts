@@ -56,10 +56,11 @@ describe("it checks out", () => {
     ]);
   });
 
-  it("reports exactly the two warnings it means to", () => {
-    // Both are genuine and both are the point: two hops are choreographed, with nothing in the model
-    // naming what drives them. An example with no warnings would teach less than one that explains its
-    // own.
+  it("has nothing left to warn about", () => {
+    // It used to carry two `unexplained-emit`s deliberately: two hops were choreographed and the model
+    // had no way to name what drove them. That was true of the language rather than of this model, and
+    // D103 gave it the words — both hops now say so with `issues`. The example teaches the clause
+    // instead of the gap, which is the better lesson now that there is one to teach.
     const files = readdirSync(EXAMPLES, { withFileTypes: true })
       .filter((e) => e.isFile() && e.name.endsWith(".7k"))
       .map((e) => ({
@@ -68,7 +69,7 @@ describe("it checks out", () => {
       }));
     const ws = buildWorkspace(files);
     const warnings = ws.diagnostics.filter((d) => d.severity === "warning");
-    expect(warnings.map((d) => d.code).sort()).toEqual(["unexplained-emit", "unexplained-emit"]);
+    expect(warnings.map((d) => d.code).sort()).toEqual([]);
   });
 });
 

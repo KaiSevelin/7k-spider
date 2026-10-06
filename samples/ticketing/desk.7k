@@ -1,0 +1,303 @@
+// The process: a ticket is raised, an agent is claimed and the requester is told, and it is either
+// resolved or it is not.
+//
+// This is where the saga and the schedule are, so it is the package the sequence diagram has the most
+// to show about: a stage whose two branches both have to succeed before anyone starts work, and an
+// hourly sweep that escalates what is running out of time.
+
+package support.desk
+
+import support.common
+import support.roster
+import support.contact
+
+envelopes common.Trace, common.Tenancy
+
+// ---------------------------------------------------------------- messages
+
+// Crosses the boundary: the portal says somebody has a problem.
+message RaiseTicket v1.0 @command {
+  ticketRef: common.TicketRef @role(businessKey)
+  requester: common.Requester
+  subject:   common.Subject
+  team:      common.TeamRef
+  priority:  common.Priority
+  channel:   common.Channel
+}
+
+message TicketAccepted v1.0 @event {
+  ticketRef: common.TicketRef @role(businessKey)
+  team:      common.TeamRef
+}
+
+// The desk telling an agent's console that this one is theirs.
+message AssignTicket v1.0 @command {
+  ticketRef:  common.TicketRef @role(businessKey)
+  assignment: common.Assignment
+  subject:    common.Subject
+}
+
+// The agent says they are done. Published by the console rather than commanded, because the work
+// happened in a person and the system is only hearing about it.
+message TicketResolved v1.0 @event {
+  ticketRef:  common.TicketRef @role(businessKey)
+  assignment: common.Assignment
+}
+
+// How a ticket ended. One event with three outcomes rather than three events, because there is one fact
+// here and a reader should not have to learn which of three names carries it.
+message TicketClosed v1.0 @event {
+  ticketRef: common.TicketRef @role(businessKey)
+  outcome:   common.Outcome
+  // Why, where there is a why: the saga's own reason for rejecting.
+  detail:    string? { length 1..200 }
+}
+
+// "What is happening with my ticket?" - asked by somebody refreshing a page, so asked constantly and
+// asked twice.
+//
+// A `@query` rather than a `@command`, and the difference is not cosmetic. A deduplication key defaults
+// to the `@role(businessKey)` field, and this has one, so as a command the second refresh would be
+// absorbed and answered with nothing - `deduplicated` in the trace, which looks like the system
+// working. Answering a question twice is correct, so a query carries no key (`02-contract.md` 5.5).
+message WhereIsTicket v1.0 @query {
+  ticketRef: common.TicketRef @role(businessKey)
+}
+
+message TicketWhereabouts v1.0 @event {
+  ticketRef:  common.TicketRef @role(businessKey)
+  // Absent until an agent has been claimed, which is the honest shape of an answer to a question asked
+  // before anything has happened.
+  assignment: common.Assignment?
+  outcome:    common.Outcome?
+}
+
+// Fired by the hourly schedule. The occurrence's instant is the business key, so a timer that fires
+// twice sweeps once.
+message SweepStale v1.0 @command {
+  due: instant @role(businessKey)
+}
+
+message SweepFinished v1.0 @event {
+  due:       instant @role(businessKey)
+  escalated: int { range 0.. }
+}
+
+// ---------------------------------------------------------------- pipes
+
+// Where the outside publishes. The boundary, and the only pipe an `@external` service writes a command
+// to.
+pipe inbound : queue {
+  ordering by tenantId
+  carries   RaiseTicket
+}
+
+pipe commands : queue {
+  ordering by tenantId
+  carries   AssignTicket, SweepStale
+}
+
+// Thirty days, because a desk's reporting looks back over a month and a topic nobody can replay is a
+// reporting outage waiting to happen.
+pipe events : topic {
+  ordering  by tenantId
+  retention 30d
+}
+
+pipe reads : queue {
+  ordering  by tenantId
+  carries   WhereIsTicket
+  retention 1d
+}
+
+// ---------------------------------------------------------------- services
+
+// Where a person types. Raises tickets, and asks after them repeatedly, which is what the query is for.
+service Portal @external {
+  emits RaiseTicket   to inbound
+  emits WhereIsTicket to reads
+
+  reacts TicketAccepted from events { once per ticketRef; replies none }
+  reacts TicketClosed   from events { once per ticketRef; replies none }
+
+  reacts TicketWhereabouts from events {
+    // No key: two identical questions deserve two answers. A query would carry none anyway; saying it
+    // here is for the reader.
+    once per none
+    replies none
+  }
+}
+
+// The agent's own screen. Receives the assignment, and says when the work is done - which is how a
+// resolution is observed at all.
+service AgentConsole @external {
+  emits TicketResolved to events
+
+  reacts AssignTicket from commands {
+    once per ticketRef
+    replies none
+  }
+}
+
+// Accepts tickets and hosts the Resolution saga.
+service TicketService {
+  emits TicketAccepted to events
+  emits TicketClosed   to events
+  emits AssignTicket   to commands
+  emits roster.ClaimAgent      to roster.commands
+  emits roster.ReleaseAgent    to roster.commands
+  emits contact.EmailRequester to contact.commands
+
+  reacts RaiseTicket from inbound {
+    // A claim check that means something here: `inbound` is where an `@external` portal publishes, so
+    // the sender really is the originator.
+    requires claim.sub == envelope.actor
+             and claim.scope contains "tickets.raise"
+    // One reply. A handler that starts a saga answers one way, and what became of the ticket is the
+    // saga's to say - which is why there is a single `TicketClosed` rather than an outcome per terminal
+    // state.
+    replies  TicketAccepted
+  }
+
+  // The saga drives these; the service only has to receive them.
+  reacts TicketResolved from events { once per ticketRef; replies none }
+
+  reacts roster.AgentClaimed     from roster.events { once per ticketRef; replies none }
+  reacts roster.NoAgentAvailable from roster.events { once per ticketRef; replies none }
+  reacts roster.AgentReleased    from roster.events { once per ticketRef; replies none }
+
+  reacts contact.RequesterReached     from contact.events { once per ticketRef; replies none }
+  reacts contact.RequesterUnreachable from contact.events { once per ticketRef; replies none }
+}
+
+// Owns the hourly sweep. Its own service because a schedule's `send` is routed by the hosting service's
+// `emits`, so whoever holds the recurring work holds the routing for it.
+service SweepService {
+  emits SweepStale    to commands
+  emits SweepFinished to events
+
+  reacts SweepStale from commands {
+    // The occurrence is the business key, so a timer that fires twice sweeps once.
+    once per due
+    replies SweepFinished
+    // Shorter than an hour on purpose: a sweep still retrying when the next one is due would escalate
+    // the same tickets twice.
+    retry   3 after 2m max 20m
+  }
+}
+
+// Reads the outcomes. Exists so the events above are consumed by something, which is what
+// `orphan-message` is for asking about.
+service Reporting {
+  emits TicketWhereabouts to events
+
+  reacts TicketAccepted from events { once per ticketRef; replies none }
+  reacts TicketClosed   from events { once per ticketRef; replies none }
+  reacts SweepFinished  from events { once per due;       replies none }
+
+  // Answers the question. One service answers, because one answer is what a question expects.
+  reacts WhereIsTicket from reads {
+    replies TicketWhereabouts
+  }
+
+  reacts contact.EmailSent     from contact.events { once per ticketRef; replies none }
+  reacts contact.EmailRejected from contact.events { once per ticketRef; replies none }
+  reacts roster.AgentClaimed   from roster.events  { once per ticketRef; replies none }
+}
+
+// ===========================================================================
+// The Process layer.
+// ===========================================================================
+
+// Raising a ticket is one business transaction: an agent is held for it and the requester is told it
+// exists, and if either of those cannot happen the other has to be undone.
+saga Resolution v1.0 {
+
+  start on RaiseTicket keyed by ticketRef {
+    requester = message.requester
+    subject   = message.subject
+    team      = message.team
+    priority  = message.priority
+  }
+
+  state {
+    requester:  common.Requester
+    subject:    common.Subject
+    team:       common.TeamRef
+    priority:   common.Priority
+    assignment: common.Assignment
+  }
+
+  // Two preconditions for starting work, and neither depends on the other: an agent held for it, and a
+  // requester who knows it exists. Running them in sequence would make every ticket wait for the mail
+  // service before the roster was even asked, for no reason the model could point at, so they share a
+  // stage (`04-process.md` 1.3).
+  //
+  // The stage is where compensation gets interesting. If the requester turns out to be unreachable
+  // after an agent was claimed, the saga rejects and `claim` - a sibling that had already completed -
+  // is unwound. That is the run `RequesterUnreachable` in the scenarios exists for.
+  parallel {
+    step claim {
+      send roster.ClaimAgent { team = state.team; priority = state.priority }
+
+      on roster.AgentClaimed { assignment = message.assignment }
+      on roster.NoAgentAvailable reject "no agent free on that team"
+      on timeout 30s             reject "the roster did not answer"
+
+      // Co-located with the step it reverses, and run only if this step completed. The inverse needs the
+      // assignment, which only the saga holds - recorded by the action above.
+      undo with roster.ReleaseAgent { assignment = state.assignment }
+    }
+
+    step greet {
+      send contact.EmailRequester { requester = state.requester; subject = state.subject }
+
+      // Records nothing. The branch is a precondition, and what it would have to record - an email
+      // address - belongs to the package that already has it.
+      on contact.RequesterReached
+      on contact.RequesterUnreachable reject "the requester cannot be reached"
+      on timeout 30s                  reject "the mail service did not answer"
+
+      // An email cannot be unsent.
+      undo none
+    }
+  }
+
+  // Not in the stage above: this one reads the assignment that `claim` produced, so it has to follow it.
+  // Handing the ticket over and waiting for the work is then one step, not two - a step that sent an
+  // assignment and then awaited nothing could only ever end in its own timeout.
+  step work {
+    send AssignTicket { assignment = state.assignment; subject = state.subject }
+
+    on TicketResolved
+
+    // A working day. Longer than this and the ticket is not being worked, whatever the board says.
+    on timeout 8h reject "nobody resolved it"
+
+    // The agent is released by the previous step's undo, and an assignment the agent has already seen
+    // cannot be taken back from their memory.
+    undo none
+  }
+
+  // Longer than the step timeout on purpose: a ticket stuck for three days is a different problem from
+  // one nobody got to today, and the two should not look the same.
+  on deadline 72h abandon
+
+  // An enum member travels as its name (`01-kernel.md` 7.1), so it is written as one.
+  on complete send TicketClosed { outcome = "Resolved" }
+
+  // `reject "nobody resolved it"` would be decoration if nothing could read it back, which is what the
+  // `detail` field is for.
+  on reject   send TicketClosed { outcome = "Unresolved"; detail = terminal.reason }
+
+  on abandon  send TicketClosed { outcome = "Abandoned" }
+}
+
+// Hourly, and `onMissed once` rather than `all`: after a two-day outage, twenty-four catch-up sweeps
+// would escalate the same backlog twenty-four times. One sweep sees everything that is late, because
+// lateness is a property of the ticket and not of the occurrence that noticed it.
+schedule SlaSweep {
+  every    "0 * * * *" in "UTC"
+  send     SweepStale { due = occurrence.due }
+  onMissed once
+}
