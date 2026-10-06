@@ -309,6 +309,32 @@ describe("the legend", () => {
     }
   });
 
+  /**
+   * The same guarantee for the rows that select on data rather than on a class.
+   *
+   * `boundary`, `lossy` and `adapter` are drawn by `[attr = "yes"]` rules, so a row setting one the
+   * stylesheet has no rule for would draw a plain box with a confident sentence beside it — which is
+   * the failure the test above exists to prevent, on the other half of the mechanism.
+   */
+  it("draws its swatches with data the stylesheet selects on", () => {
+    const keyed = new Set(
+      [...JSON.stringify(STYLE).matchAll(/\[(\w+)\s*=/g)].map((m) => m[1]!),
+    );
+    for (const row of LEGEND) {
+      for (const key of Object.keys(row.data ?? {})) {
+        expect(keyed.has(key), `"${row.what}" selects on [${key}]`).toBe(true);
+      }
+    }
+  });
+
+  /** `@adapter` is a boundary, and the graph is where boundaries are read. */
+  it("explains an adapter, drawn as the service it still is", () => {
+    const row = LEGEND.find((r) => r.what.includes("@adapter"));
+    expect(row, "no legend row for an adapter").toBeDefined();
+    expect(row?.classes).toContain("service");
+    expect(row?.data).toEqual({ adapter: "yes" });
+  });
+
   it("has a row for every kind of pipe", () => {
     // A new pipe kind is a new shape on the canvas, and a shape with nothing to look it up by is the
     // thing a legend exists to prevent.

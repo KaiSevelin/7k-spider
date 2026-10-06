@@ -196,6 +196,10 @@ export const elementsOf = (graph: Graph): ElementDefinition[] => [
       // A lossy pipe is drawn differently, because nothing may depend on it for progress.
       lossy: n.delivery === "at-most-once" ? "yes" : "no",
       incomplete: n.incomplete === true ? "yes" : "no",
+      // `@adapter`: a service whose job is to stop a foreign vocabulary. Data rather than a node kind,
+      // because an adapter *is* a service everywhere else — it connects, it routes, it generates — and
+      // a kind of its own would have to be taught to every place that asks whether something is one.
+      adapter: n.annotations.includes("adapter") ? "yes" : "no",
     },
     // A pipe carries its kind as a second class, which is what picks its shape.
     classes: n.kind === "pipe" && n.pipeKind !== undefined ? `pipe kind-${n.pipeKind}` : n.kind,
@@ -277,6 +281,24 @@ export const STYLE: cytoscape.StylesheetJson = [
       "border-color": "var(--port-line)",
       "border-style": "dashed",
       shape: "round-tag",
+    },
+  },
+  {
+    /**
+     * An `@adapter`: a service that exists to keep somebody else's vocabulary out.
+     *
+     * Drawn in the boundary colour the package bands use, because that is what it is — the edge of a
+     * domain, standing where the `@external` service it translates for is on the other side. A double
+     * border rather than a different shape: it is still a service, and a shape of its own would say
+     * the graph has a fourth kind of thing in it.
+     *
+     * After `node.service` so it wins, and keyed on data because the class is still `service`.
+     */
+    selector: 'node[adapter = "yes"]',
+    style: {
+      "border-color": "var(--boundary)",
+      "border-width": 3,
+      "border-style": "double",
     },
   },
   {
@@ -883,6 +905,11 @@ export const LEGEND: readonly LegendRow[] = [
   {
     what: "a service outside this model: @external, so 7K describes none of its behaviour",
     classes: "external",
+  },
+  {
+    what: "an adapter: @adapter, a service that translates, and where a foreign vocabulary stops",
+    classes: "service",
+    data: { adapter: "yes" },
   },
   { what: "a queue: consumers compete, and each message goes to one of them", classes: "pipe kind-queue" },
   { what: "a topic: every subscriber gets its own copy", classes: "pipe kind-topic" },
