@@ -1,11 +1,43 @@
 # A parcel locker network
 
-Spider's example workspace. Four packages, a boundary, personal data that propagates, a lossy pipe, a
-saga with a parallel stage and a three-day wait, and a nightly schedule across a daylight-saving
-change.
+Spider's example workspace, and the system it describes: a network of parcel lockers in the street, and
+the software that hands a parcel from a courier to the person it is for without the two ever meeting.
+
+## What the system does
+
+A courier arrives at a locker with a parcel. The system has to find a compartment the right size, hold
+it, tell the recipient where their parcel is and how to open it, and then let go of the compartment
+once the parcel has been collected — or once it is clear nobody is coming.
+
+That is one business transaction across four packages that do not trust each other to be up:
+
+| Package | What it owns |
+|---|---|
+| `parcel.delivery` | the handover itself: accepting drops, running the process, and the nightly sweep |
+| `parcel.lockers` | the hardware — compartments, doors, and the telemetry they report |
+| `parcel.notify` | reaching a person: verifying they can be reached, and sending the text |
+| `parcel.common` | the shared vocabulary, and the only place `@pii` is declared |
+
+**The interesting part is what can go wrong.** A compartment is a scarce physical resource, so holding
+one is a commitment that has to be given back: if the recipient turns out to be unreachable *after* a
+compartment was reserved, the reservation must be undone. That is why the handover is a saga rather
+than a sequence of calls — and why `reserve` and `verify` run as a parallel stage, since neither needs
+the other's answer and every parcel would otherwise wait for the slower of the two.
+
+The long waits are real. A recipient has three days to collect; a parcel nobody collects is swept back
+to the courier by a schedule that runs every night. A week is the point at which an instance is a
+different problem and is abandoned rather than rejected.
+
+**Personal data is deliberately fenced.** A phone number lives in `parcel.notify` and nowhere else. The
+handover saga knows a `Recipient` and asks `parcel.notify` to reach them; it never learns how. `@pii`
+is declared on two values in `parcel.common` and propagates upward from there to every record, message
+and pipe that carries them, which is what the `PiiFlow` lens draws.
+
+## Why it is the example
 
 It exists to be looked at, so it deliberately contains the things the views have something to say
-about.
+about: four packages, a boundary, personal data that propagates, a lossy pipe, a saga with a parallel
+stage and a three-day wait, and a nightly schedule across a daylight-saving change.
 
 ## Running it
 
@@ -92,25 +124,38 @@ schedule's clauses that look optional are required and for the same reason: a lo
 a daylight-saving change either fires twice or not at all, and after an outage `skip` loses a day's
 returns.
 
-## Its two warnings are the point
+## The two warnings it used to have
 
 ```
-7k check: 5 units from 5 files, 0 errors, 2 warnings
+7k check: 6 units from 6 files, 0 errors, 0 warnings
 ```
 
-Both are `unexplained-emit`, and both are correct:
+It did not always check out this cleanly. Two hops here are **choreographed** — a service issues a
+command in the course of handling another one — and `unexplained-emit` was right to ask what drove
+them:
 
 ```
 CompartmentService emits the @command lockers.OpenDoor, but no `replies`, saga or
 schedule says what makes it do so — so the model cannot say what instructs this
 ```
 
-Those two hops are **choreographed**: a service issues a command in the course of handling another one,
-and nothing in the model names what drives it. That is a real property of the design and the checker is
-right to ask about it. Making it an orchestration — a saga step — would remove the warning and change
-the system.
+The warning was correct and could not be acted on, because 7K had no way to say it. `replies` is the
+closed outcome space the *sender* awaits, so putting a command there makes every sender wait for it;
+a saga step would have moved the decision out of the service that makes it, and for `SendSms` that
+would have spread a phone number into a package that deliberately has none.
 
-An example with no warnings would teach less than one that explains its own.
+So the language gained a clause (D103). Both hops now name what instructs them:
+
+```7k
+reacts ReleaseCompartment from commands {
+  once per parcelRef
+  replies CompartmentReleased
+  issues  lockers.OpenDoor
+}
+```
+
+`replies` is what the sender awaits; `issues` is what the handler sets in motion and nobody waits for.
+The choreography is unchanged — it is now written down.
 
 ## Regenerating the trace
 
