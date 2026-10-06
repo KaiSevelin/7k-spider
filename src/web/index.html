@@ -448,6 +448,9 @@
       }
       #data[hidden] { display: none; }
       #dataCanvas { flex: 1; min-height: 0; }
+      /* Wide enough for a qualified name, and the first thing in the header because it is what the
+         panel is *about*; the depth beside it only says how far from it to go. */
+      #dataSubject { flex: 1; min-width: 0; max-width: 340px; }
       #dataScope { color: var(--ink-dim); white-space: nowrap; }
       #dataHidden { color: var(--ink-dim); }
 
@@ -1026,6 +1029,7 @@
       <aside id="data" hidden>
         <header class="panelHead">
           <b>data</b>
+          <select id="dataSubject" title="what to look around"></select>
           <select id="dataDepth" title="how far from the selection">
             <option value="1">1 hop</option>
             <option value="2" selected>2 hops</option>

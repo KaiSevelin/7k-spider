@@ -771,11 +771,55 @@ let dataView: DataView | undefined;
 
 const dataDepth = (): number => Number(el<HTMLSelectElement>("dataDepth").value);
 
+/** The kinds this view draws, which is the Contract layer and nothing else. */
+const DATA_KINDS: ReadonlySet<string> = new Set(["message", "record", "value", "enum", "envelope"]);
+
+/**
+ * What the panel is looking around.
+ *
+ * The selection when it is one of these, and otherwise whatever the picker says. There has to be a
+ * second answer, because without one this view fell back to drawing *everything* — which `data.ts`
+ * opens by calling the fastest way to make it useless, and which is what it did every time somebody
+ * opened the panel before clicking anything.
+ */
+function dataSubject(): SelectionId | undefined {
+  if (selection.k === "declaration" && DATA_KINDS.has(selection.id.slice(0, selection.id.indexOf(":")))) {
+    return selection.id;
+  }
+  const picked = el<HTMLSelectElement>("dataSubject").value;
+  return picked === "" ? undefined : (picked as SelectionId);
+}
+
+/** Every declaration this view can be centred on, so the picker is the model's own list. */
+function fillDataSubjects(): void {
+  const picker = el<HTMLSelectElement>("dataSubject");
+  const was = picker.value;
+  picker.replaceChildren();
+  if (model === undefined) return;
+
+  const subjects = model.decls
+    .filter((d) => DATA_KINDS.has(d.kind))
+    .map((d) => ({ id: idOf(d), label: qualify(d.id), kind: d.kind }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  for (const s of subjects) {
+    const option = document.createElement("option");
+    option.value = s.id;
+    option.textContent = `${s.label}`;
+    option.title = `${s.kind} ${s.label}`;
+    picker.append(option);
+  }
+  // Keep what was chosen if it survived the reload; otherwise start somewhere real rather than on an
+  // empty panel, because a message and what it holds is what this view is for.
+  picker.value = subjects.some((s) => s.id === was) ? was : (subjects[0]?.id ?? "");
+}
+
 function dataOptions(): DataOptions {
   const depth = dataDepth();
   // `0` means everything, which stays available and is deliberately not the default.
   if (depth === 0) return {};
-  return selection.k === "declaration" ? { around: selection.id, depth } : {};
+  const around = dataSubject();
+  return around === undefined ? {} : { around, depth };
 }
 
 function showData(): void {
@@ -785,9 +829,12 @@ function showData(): void {
   // Named from the data graph, not the topology one: the graph draws no messages, so asking it for a
   // message label gets an id back.
   let scope = "everything";
-  if (dataDepth() !== 0 && selection.k === "declaration") {
-    const at = selection.id;
-    scope = `around ${built.nodes.find((n) => n.id === at)?.label ?? at}`;
+  const around = dataDepth() === 0 ? undefined : dataSubject();
+  if (around !== undefined) {
+    scope = `around ${built.nodes.find((n) => n.id === around)?.label ?? around}`;
+    // The picker follows the selection, so the two never say different things about one panel.
+    const picker = el<HTMLSelectElement>("dataSubject");
+    if (picker.value !== around) picker.value = around;
   }
   el("dataScope").textContent = scope;
   el("dataHidden").textContent = built.hidden === 0 ? "" : `${built.hidden} hidden`;
@@ -2129,6 +2176,7 @@ async function load(): Promise<void> {
   fillRuns();
   draw((await sourcesResponse.json()) as Sources);
   fillComposable();
+  fillDataSubjects();
   // A re-parse rebuilds the form against the new model, keeping whatever has been typed: the payload is
   // data, and only the declaration it is checked against changed.
   if (composing !== undefined) startComposing();
@@ -2171,6 +2219,7 @@ el("toggleGenerated").addEventListener("click", () => toggleGenerated());
 el("toggleData").addEventListener("click", () => toggleData());
 el("dataClose").addEventListener("click", () => toggleData(false));
 el("dataDepth").addEventListener("change", () => showData());
+el("dataSubject").addEventListener("change", () => showData());
 el("toggleAbout").addEventListener("click", () => toggleAbout());
 el("aboutClose").addEventListener("click", () => toggleAbout(false));
 el("toggleOpen").addEventListener("click", () => toggleOpen());
