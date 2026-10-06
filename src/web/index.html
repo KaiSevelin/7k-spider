@@ -15,6 +15,7 @@
         --line: #c9c7c1;
         --accent: #1a5fb4;
         --warn: #b4610a;
+        --bad: #a8201a;
         --service: #eef3fb;
         --service-line: #7a9cc6;
         --pipe: #f4f1ea;
@@ -34,6 +35,7 @@
           --line: #43454a;
           --accent: #78aeff;
           --warn: #e0923c;
+          --bad: #e98a84;
           --service: #1e2733;
           --service-line: #4a6d99;
           --pipe: #262420;
@@ -260,6 +262,52 @@
 
       main { position: relative; min-height: 0; }
       #graph { position: absolute; inset: 0; }
+
+      /* The other side of the flip. Same box as the graph, because that is what a flip means: one
+         pane, two drawings of one model, and the drawers to the right keep working over either. */
+      #code {
+        position: absolute;
+        inset: 0;
+        overflow: auto;
+        background: var(--bg);
+        padding: 10px 0 40px;
+      }
+      #code[hidden] { display: none; }
+      .codeFile + .codeFile { margin-top: 18px; }
+      .codeFile > header {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 5px 14px;
+        background: var(--surface);
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        font-size: 11px;
+        color: var(--ink-dim);
+      }
+      #code pre {
+        margin: 0;
+        padding: 10px 14px;
+        font: 12px/1.55 var(--mono);
+        white-space: pre;
+        tab-size: 2;
+      }
+      /* A declaration is a target, so it has to look like one under the pointer. */
+      #code .decl { display: inline; border-radius: 3px; cursor: pointer; }
+      #code .decl:hover { background: var(--package); }
+      #code .decl.on {
+        background: var(--service);
+        box-shadow: 0 0 0 1px var(--service-line);
+      }
+      /* Coloured by what the lexer already decided each token is. */
+      #code .k { color: var(--accent); font-weight: 600; }
+      #code .s { color: var(--boundary); }
+      #code .rx { color: var(--boundary); }
+      #code .n { color: var(--pipe-line); }
+      #code .c { color: var(--ink-dim); font-style: italic; }
+      #code .p { color: var(--ink-dim); }
+      #code .i { color: var(--ink); }
+      #code .bad { color: var(--bad); text-decoration: underline wavy; }
 
       /* A drawer rather than a pane: the graph is the view you keep, and the sequence is the one you
          open when a trace is the question. It takes the right-hand edge full height, because a sequence
@@ -990,6 +1038,7 @@
       <button type="button" id="toggleSaga" title="the saga being declared (g)" hidden>
         saga
       </button>
+      <button type="button" id="toggleCode" title="the model as text (t)">code</button>
       <button type="button" id="toggleGenerated" title="the generated code (v)" hidden>generated</button>
       <button type="button" id="toggleCompose" title="build a message (c)">compose</button>
       <button type="button" id="connect" title="connect two things (n)">connect&hellip;</button>
@@ -1012,6 +1061,7 @@
     </header>
     <main>
       <div id="graph"></div>
+      <div id="code" hidden></div>
 
       <div id="palette" hidden>
         <input

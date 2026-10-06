@@ -63,6 +63,7 @@ import {
   type Forms,
 } from "../compose.js";
 import { refreshProblems, renderForm } from "./compose-ui.js";
+import { renderCode, type CodeView } from "./code-ui.js";
 import { candidates, pairFor, previewOf, roleOf, type Pair, type Preview } from "./connect-ui.js";
 import {
   parseLayout,
@@ -598,6 +599,8 @@ function applyHighlight(): void {
   dataView?.highlight(highlight);
   // Scoped to the selection, so selecting elsewhere re-centres it rather than leaving a stale picture.
   if (!el("data").hidden) showData();
+  // And the text marks and scrolls to the same declaration, which is what makes the flip a flip.
+  showCodeSelection();
 }
 
 function refreshTransport(): void {
@@ -853,6 +856,12 @@ function showData(): void {
   }
   // The same `resolve` every other view uses, so what lights up here is what lights up there.
   dataView.highlight(resolve(join(model, trace), selection));
+}
+
+/** The text's own highlight, which is the selection like everything else. */
+function showCodeSelection(): void {
+  if (!showingCode()) return;
+  codeView?.show(selection.k === "declaration" ? selection.id : undefined);
 }
 
 function toggleData(force?: boolean): void {
@@ -1601,6 +1610,43 @@ function toggleGenerated(): void {
 }
 
 
+// ---- the flip --------------------------------------------------------------
+
+/**
+ * The same model, as text.
+ *
+ * A flip rather than a second window or a split: a graph answers "what talks to what" and a file
+ * answers "what exactly does it say", and those two questions alternate while you read. The selection
+ * is one thing across both, so flipping lands you on what you were already looking at, and clicking a
+ * declaration in the text selects it for the graph you are about to flip back to.
+ */
+let codeView: CodeView | undefined;
+// `codeFiles`, not `sources`: there is already a `sources` here holding the same text in the shape the
+// mutation API wants, and the note beside it records what shadowing it cost last time.
+let codeFiles: readonly { readonly path: string; readonly source: string }[] = [];
+
+const showingCode = (): boolean => !el("code").hidden;
+
+function buildCode(): void {
+  if (model === undefined) return;
+  codeView?.destroy();
+  codeView = renderCode(el("code"), model, codeFiles, { onSelect: (id) => select(id) });
+  codeView.show(selection.k === "declaration" ? selection.id : undefined);
+}
+
+function toggleCode(force?: boolean): void {
+  const open = force ?? el("code").hidden;
+  if (open && model === undefined) return;
+  el("code").hidden = !open;
+  el("graph").hidden = open;
+  el("toggleCode").classList.toggle("on", open);
+  if (open) {
+    // Built on the way in rather than kept in step while hidden: a model reload replaces every file,
+    // and re-colouring text nobody is looking at is work for nothing.
+    buildCode();
+  }
+}
+
 // ---- compose ---------------------------------------------------------------
 
 function fillComposable(): void {
@@ -2086,6 +2132,7 @@ function redraw(): void {
 
 function draw(read: Sources): void {
   sourceOf = new Map(read.files.map((f) => [f.path, f.source]));
+  codeFiles = read.files;
   // The text a mutation is computed against. Named distinctly from the parameter, because shadowing it
   // left `sources` empty and every mutation would have been computed against nothing.
   sources = Object.fromEntries(read.files.map((f) => [f.path, f.source]));
@@ -2177,6 +2224,7 @@ async function load(): Promise<void> {
   draw((await sourcesResponse.json()) as Sources);
   fillComposable();
   fillDataSubjects();
+  if (showingCode()) buildCode();
   // A re-parse rebuilds the form against the new model, keeping whatever has been typed: the payload is
   // data, and only the declaration it is checked against changed.
   if (composing !== undefined) startComposing();
@@ -2215,6 +2263,7 @@ document.addEventListener("click", (e) => {
 void loadProviders();
 el("previewClose").addEventListener("click", () => closePreview());
 el("previewAll").addEventListener("click", () => flipAll());
+el("toggleCode").addEventListener("click", () => toggleCode());
 el("toggleGenerated").addEventListener("click", () => toggleGenerated());
 el("toggleData").addEventListener("click", () => toggleData());
 el("dataClose").addEventListener("click", () => toggleData(false));
@@ -2353,6 +2402,7 @@ document.addEventListener("keydown", (e) => {
   if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
   if ((e.key === "g" || e.key === "G") && !el("toggleSaga").hidden) toggleSaga();
   if (e.key === "c" || e.key === "C") toggleCompose();
+  if (e.key === "t" || e.key === "T") toggleCode();
   if ((e.key === "v" || e.key === "V") && !el("toggleGenerated").hidden) toggleGenerated();
   // Only while the drawer is open: `e` is a letter, and a letter that does something invisible is
   // worse than no shortcut.
