@@ -309,8 +309,8 @@ The default is right for a lens somebody wrote by naming the things they wanted:
 packages and wants the locker pipes they touch, drawn as pipes. It is wrong for "show me this package",
 and wrong in a way that is easy to miss rather than obviously broken — the neighbours' pipes come in
 whole, *their package boxes come with them*, and the ports end up one hop further out than the boundary
-the reader asked about. A `parcel.delivery` lens over the parcel example drew eleven pipes across three
-package boxes; with closure off it draws four pipes, one box, and five ports.
+the reader asked about. A `parcel.delivery` lens over the parcel example drew eight pipes across three
+package boxes; with closure off it draws the package's own four pipes, one box, and five ports.
 
 Which is to say the `one package` rows were not perimeter views at all, despite that being the entire
 reason for having them. They pass `closure: "none"` now, and the property is readable from `views.json`
