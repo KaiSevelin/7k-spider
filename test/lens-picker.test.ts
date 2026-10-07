@@ -73,7 +73,9 @@ describe("the lens picker", () => {
   it("offers the saved views the model committed", async () => {
     if (!ready || page === undefined) return;
     const labels = await page.locator("#lens option").allTextContents();
-    expect(labels).toContain("everything");
+    // Spider's own row is dashed, so it does not read as a third naming convention beside the
+    // reader's names and the package ones.
+    expect(labels.some((l) => l.includes("everything") && l.includes("—"))).toBe(true);
     expect(labels).toContain("Handover");
     expect(labels).toContain("PiiFlow");
   }, 60_000);
@@ -88,7 +90,11 @@ describe("the lens picker", () => {
 
   it("keeps them apart from the saved ones", async () => {
     if (!ready || page === undefined) return;
-    expect(await page.locator("#lens optgroup").getAttribute("label")).toBe("one package");
+    const groups = await page
+      .locator("#lens optgroup")
+      .evaluateAll((gs) => gs.map((g) => (g as HTMLOptGroupElement).label));
+    expect(groups).toContain("one package");
+    expect(groups.some((g) => g.includes("views.json"))).toBe(true);
   }, 60_000);
 
   it("narrows the graph to the subsystem", async () => {

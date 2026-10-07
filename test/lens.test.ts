@@ -346,3 +346,48 @@ describe("reading views.json", () => {
     expect(parseViews("[]").problems[0]).toContain("not a JSON object");
   });
 });
+
+/**
+ * `closure: "none"` — a perimeter view of one subsystem.
+ *
+ * The default closes over the edges, which is right for a lens somebody wrote by naming what they
+ * wanted. It is wrong for "show me this package", and wrong in a way that is easy to miss: the
+ * neighbours' pipes come in whole, their package boxes come with them, and the ports end up one hop
+ * further out than the boundary that was asked about. Which is what the `one package` rows in Spider's
+ * lens picker were doing.
+ */
+describe("a view that does not close over its edges", () => {
+  it("keeps what the selectors named and nothing else", () => {
+    const g = lensed({ include: ["package:acme.shop"], exclude: [], closure: "none" });
+    expect(ids(g)).toContain("service:acme.shop.OrderService");
+    expect(ids(g)).not.toContain("pipe:acme.warehouse.picks");
+    expect(ids(g)).not.toContain("service:acme.warehouse.Picking");
+    // And no box for a package with nothing of its own left in view.
+    expect(ids(g)).not.toContain("package:acme.warehouse");
+  });
+
+  it("stands a port where the closing version brought a node in whole", () => {
+    const closed = lensed({ include: ["package:acme.shop"], exclude: [] });
+    const open = lensed({ include: ["package:acme.shop"], exclude: [], closure: "none" });
+    // The same boundary, reported two ways: as foreign nodes, or as ports on the near side of it.
+    const foreign = (of: readonly string[]): string[] => of.filter((id) => id.includes("acme.warehouse"));
+    expect(foreign(ids(closed)).length).toBeGreaterThan(0);
+    expect(foreign(ids(open))).toEqual([]);
+    expect(ids(open).filter(isPort).length).toBeGreaterThan(0);
+  });
+
+  it("is read from views.json, and anything else is a problem rather than a default", () => {
+    const good = parseViews('{ "Only": { "include": ["package:acme.shop"], "closure": "none" } }');
+    expect(good.problems).toEqual([]);
+    expect(good.views["Only"]?.closure).toBe("none");
+
+    const bad = parseViews('{ "Only": { "include": [], "closure": "sideways" } }');
+    expect(bad.problems.join(" ")).toContain("closure");
+  });
+
+  it("defaults to closing, so every lens written before this one is unchanged", () => {
+    const g = lensed({ include: ["service:OrderService"], exclude: [] });
+    expect(ids(g)).toContain("pipe:acme.shop.events");
+    expect(parseViews('{ "A": { "include": [] } }').views["A"]?.closure).toBeUndefined();
+  });
+});

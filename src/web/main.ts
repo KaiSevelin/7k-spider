@@ -29,6 +29,8 @@ import {
   addService,
   addStep,
   carriersOf,
+  removePipe,
+  removeService,
   connectEmit,
   emittersOf,
   connectReact,
@@ -188,7 +190,15 @@ let formProblems: readonly string[] = [];
 let composing: Form | undefined;
 let payload: Record<string, import("@sevenk/core").JsonValue> = {};
 
-const EVERYTHING_LABEL = "everything";
+/**
+ * The row that is not a lens.
+ *
+ * Written with dashes because it is Spider's own chrome sitting in a list of the reader's own names.
+ * A lens in `views.json` is called whatever they called it — `Perimeter`, `PiiFlow` — and a derived
+ * package lens is called whatever the package is called, so a bare lowercase `everything` read as a
+ * third naming convention rather than as "no lens". The same idiom the mockset picker uses.
+ */
+const EVERYTHING_LABEL = "— everything —";
 
 const optionsFromForm = (): GraphOptions => ({
   packages: el<HTMLInputElement>("packages").checked,
@@ -211,7 +221,14 @@ const currentLens = (): Lens => {
   const saved = views[lensPicker.value];
   if (saved !== undefined) return saved;
   if (lensPicker.value.startsWith(PACKAGE_LENS)) {
-    return { include: [`package:${lensPicker.value.slice(PACKAGE_LENS.length)}`], exclude: [] };
+    // `closure: "none"`: the boundary a reader asked about is the package, so everything outside it
+    // is a port. Closing over the edges would bring the neighbours' pipes in whole, their package
+    // boxes with them, and put the ports one hop further out than the boundary.
+    return {
+      include: [`package:${lensPicker.value.slice(PACKAGE_LENS.length)}`],
+      exclude: [],
+      closure: "none",
+    };
   }
   return EVERYTHING;
 };
@@ -384,7 +401,11 @@ function select(id: SelectionId | undefined): void {
     if (node !== undefined && roleOf(node) !== undefined) {
       if (connectingFrom === undefined) {
         connectingFrom = id;
-        status.textContent = `from ${node.label} — now click the other end`;
+        // Re-armed with the end in hand, so the half of the graph that is now out of reach dims.
+        view?.setConnecting(true, id, connectable);
+        status.textContent = `from ${node.label} — now click ${
+          roleOf(node) === "service" ? "a pipe" : "a service"
+        }`;
         return;
       }
       proposeConnection(id);
@@ -1090,6 +1111,43 @@ function openMenu(
   heading.textContent = label;
   const rows: HTMLElement[] = [heading];
 
+  // ---- taking something out -------------------------------------------------
+  //
+  // On the thing clicked, first, because it is about that thing — the generate rows below are about
+  // a selection, which may be several. Previewed like every other edit rather than done on the click:
+  // a destructive action reached by right-clicking the wrong node is exactly what a preview is for.
+  //
+  // The reason it cannot be done is the mutation's own, computed now rather than guessed at, which is
+  // how a greyed row can say "`DeliveryService` emits to it — disconnect those first" instead of
+  // "cannot be removed".
+  const clicked = at.id === undefined ? undefined : model?.decls.find((d) => idOf(d) === at.id);
+  if (clicked !== undefined && (clicked.kind === "service" || clicked.kind === "pipe")) {
+    const target = clicked;
+    const place = editable();
+    const mutation =
+      place === undefined
+        ? undefined
+        : target.kind === "service"
+          ? removeService(place, { service: qualify(target.id) })
+          : removePipe(place, { pipe: qualify(target.id) });
+    const why =
+      mutation === undefined
+        ? "no model to edit"
+        : mutation.edits.length === 0
+          ? (mutation.diagnostics[0]?.message ?? "cannot be removed")
+          : undefined;
+    rows.push(
+      item(
+        `remove ${target.kind} ${target.id.name}`,
+        `from ${target.id.pkg}`,
+        () => {
+          if (mutation !== undefined) showRemoval(mutation);
+        },
+        why,
+      ),
+    );
+  }
+
   if (providers.length === 0) {
     const empty = document.createElement("i");
     // A model with no `.7k/build.json` is a model nobody has asked to generate yet, which is a state
@@ -1143,6 +1201,22 @@ function openMenu(
   const y = where.y - main.top;
   menu.style.left = `${Math.max(0, Math.min(x, main.width - box.width - 8))}px`;
   menu.style.top = `${Math.max(0, Math.min(y, main.height - box.height - 8))}px`;
+}
+
+/**
+ * A removal, in the panel every other edit goes through.
+ *
+ * Nothing to fill in, so there is no form — just what will go, and the warnings about what else it
+ * costs. `removeService` says when a saga loses the host it was deriving and when a scenario names it;
+ * both are things to read before accepting rather than after.
+ */
+function showRemoval(mutation: Mutation): void {
+  closeMenu();
+  proposeWhat.textContent = mutation.describe;
+  const body = document.createElement("div");
+  proposeBody.replaceChildren(body);
+  showMutation(mutation, body);
+  propose.hidden = false;
 }
 
 /**
@@ -1771,12 +1845,31 @@ function toggleCompose(force?: boolean): void {
 const editable = (): Editable | undefined =>
   model === undefined ? undefined : { model, trees, sources };
 
+/**
+ * Whether a click on this node could be the next end of the connection being made.
+ *
+ * The same `roleOf` the click handler decides with, so what is drawn as reachable and what is
+ * accepted are one answer. Before an end is chosen both kinds are legal; after one, only the other
+ * kind is, because the graph is bipartite — a service connects to a pipe and never to another service
+ * (`docs/design.md` 3.1). A package, a port and a dead letter have no role and are never a target.
+ */
+function connectable(id: SelectionId): boolean {
+  if (graph === undefined) return false;
+  const node = nodeFor(graph, id);
+  const role = node === undefined ? undefined : roleOf(node);
+  if (role === undefined) return false;
+  if (connectingFrom === undefined) return true;
+  const from = nodeFor(graph, connectingFrom);
+  const fromRole = from === undefined ? undefined : roleOf(from);
+  return fromRole === undefined || role !== fromRole;
+}
+
 function armConnect(on?: boolean): void {
   const armed = on ?? connectingFrom === undefined;
   connectingFrom = undefined;
   document.body.classList.toggle("connecting", armed);
   el("connect").classList.toggle("armed", armed);
-  view?.setConnecting(armed);
+  view?.setConnecting(armed, undefined, connectable);
   if (armed) {
     status.textContent = "click a service, then a pipe, or drag between them — either order";
   } else {
@@ -1917,6 +2010,8 @@ function closeProposal(): void {
 async function applyProposal(): Promise<void> {
   if (proposal === undefined) return;
   const sending = proposal;
+  const did = sending.mutation.describe;
+  const look = addedBy(sending.mutation);
   closeProposal();
 
   try {
@@ -1937,6 +2032,37 @@ async function applyProposal(): Promise<void> {
 
   // Either way: what is on screen should be what is on disk.
   await load();
+
+  // What happened, said out loud.
+  //
+  // Write-through means there is no dialog to acknowledge and no dirty marker to notice, so without
+  // this the only evidence of a successful edit is the drawing changing — and under a lens it may not
+  // change at all, because the thing just added is outside what the lens selects. That reads as the
+  // edit having failed. It is the one case where the graph cannot speak for itself, so the status line
+  // does.
+  if (layoutProblems.length === 0) {
+    const outside = look !== undefined && graph !== undefined && nodeFor(graph, look) === undefined;
+    const lens = lensPicker.value === "" ? undefined : lensPicker.selectedOptions[0]?.textContent;
+    status.classList.remove("bad");
+    status.textContent = outside
+      ? `${did} — outside the ${lens === undefined ? "current view" : `\`${lens}\` lens`}, so it is not drawn`
+      : did;
+  }
+}
+
+/**
+ * The id a mutation added, where it added one, so the status line can say whether it is on screen.
+ *
+ * Read from `describe` rather than from the edits, because the operation already composed the sentence
+ * and the edits are text. Only the shapes that introduce a declaration — `add <kind> <name> to <pkg>`
+ * — have one; a connection, a removal and a scenario step do not add a node.
+ */
+function addedBy(mutation: Mutation): SelectionId | undefined {
+  const m = /^add (service|pipe|saga) (\S+) to (\S+)$/.exec(mutation.describe);
+  if (m === null) return undefined;
+  const [, kind, name, pkg] = m;
+  // A saga is not drawn on the graph at all, so there is nothing to look for.
+  return kind === "saga" ? undefined : (`${kind}:${pkg}.${name}` as SelectionId);
 }
 
 
@@ -2991,11 +3117,24 @@ function fillLenses(): void {
   const chosen = lensPicker.value;
   lensPicker.replaceChildren();
 
-  for (const name of [EVERYTHING_LABEL, ...Object.keys(views)]) {
-    const option = document.createElement("option");
-    option.value = name === EVERYTHING_LABEL ? "" : name;
-    option.textContent = name;
-    lensPicker.append(option);
+  const everything = document.createElement("option");
+  everything.value = "";
+  everything.textContent = EVERYTHING_LABEL;
+  lensPicker.append(everything);
+
+  // The saved ones in a group of their own, so their names read as the reader's rather than as
+  // Spider's. Only when there are any: an empty group label is a heading over nothing.
+  const saved = Object.keys(views);
+  if (saved.length > 0) {
+    const group = document.createElement("optgroup");
+    group.label = "saved in .7k/views.json";
+    for (const name of saved) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      group.append(option);
+    }
+    lensPicker.append(group);
   }
 
   // Then one per package, in a group of their own so a saved lens is never confused with a derived

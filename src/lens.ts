@@ -27,6 +27,20 @@ export interface Lens {
   readonly include: readonly string[];
   /** Selectors to subtract afterwards. An exclude cannot be undone by an include. */
   readonly exclude: readonly string[];
+  /**
+   * How far the lens reaches past what its selectors named.
+   *
+   * `"edges"`, the default, is what section 4.2 describes: the view closes over its edges, so including
+   * a service brings in the pipes it emits to and reacts from. That is right for a lens somebody wrote
+   * by naming the things they wanted — `Handover` names two packages and wants the locker pipes they
+   * touch, drawn as pipes.
+   *
+   * `"none"` keeps the selectors' own answer and stands a port wherever an edge leaves it. That is
+   * what a *perimeter* view of one subsystem is, and closing over the edges gets it wrong in a way
+   * that is easy to miss: the neighbours' pipes come in whole, their package boxes come with them, and
+   * the ports end up one hop further out than the boundary the reader asked about.
+   */
+  readonly closure?: "edges" | "none";
 }
 
 /** `views.json`: lenses by name. */
@@ -156,7 +170,16 @@ export function parseViews(text: string): ViewsResult {
       return out;
     };
 
-    views[name] = { include: list(entry.include, "include"), exclude: list(entry.exclude, "exclude") };
+    const closure = (value as { closure?: unknown }).closure;
+    if (closure !== undefined && closure !== "edges" && closure !== "none") {
+      problems.push(`\`${name}\`.closure is \`edges\` or \`none\``);
+    }
+
+    views[name] = {
+      include: list(entry.include, "include"),
+      exclude: list(entry.exclude, "exclude"),
+      ...(closure === "none" || closure === "edges" ? { closure } : {}),
+    };
   }
 
   return { views, problems };
@@ -193,14 +216,18 @@ export function resolveLens(graph: Graph, lens: Lens): Graph {
   // from; including a pipe brings in both ends." One step, not iterated: closing transitively would
   // walk the whole connected component and the lens would select everything, which is plainly not
   // what a saved filter is for.
-  const base = [...inside];
-  for (const edge of graph.edges) {
-    const fromIn = inside.has(edge.from);
-    const toIn = inside.has(edge.to);
-    if (fromIn === toIn) continue;
-    const outer = fromIn ? edge.to : edge.from;
-    const innerIsBase = base.includes(fromIn ? edge.from : edge.to);
-    if (innerIsBase) inside.add(outer);
+  // `closure: "none"` skips it entirely, which is what makes a perimeter view of one subsystem
+  // possible: every edge that leaves becomes a port in step 4 instead of dragging its far end in.
+  if (lens.closure !== "none") {
+    const base = [...inside];
+    for (const edge of graph.edges) {
+      const fromIn = inside.has(edge.from);
+      const toIn = inside.has(edge.to);
+      if (fromIn === toIn) continue;
+      const outer = fromIn ? edge.to : edge.from;
+      const innerIsBase = base.includes(fromIn ? edge.from : edge.to);
+      if (innerIsBase) inside.add(outer);
+    }
   }
 
   // 3. The excludes, which an include cannot undo.

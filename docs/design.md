@@ -302,6 +302,20 @@ A `label:` selector matches **propagated labels and annotations both**, which is
 reach the pipe carrying the message carrying the record carrying the `@pii` field, and what makes the
 specification's own `label:external` perimeter lens mean anything (7K's D95).
 
+**Closure is per lens, and a perimeter view turns it off.** `closure: "none"` keeps what the selectors
+named and nothing else, standing a port wherever an edge leaves it.
+
+The default is right for a lens somebody wrote by naming the things they wanted: `Handover` names two
+packages and wants the locker pipes they touch, drawn as pipes. It is wrong for "show me this package",
+and wrong in a way that is easy to miss rather than obviously broken — the neighbours' pipes come in
+whole, *their package boxes come with them*, and the ports end up one hop further out than the boundary
+the reader asked about. A `parcel.delivery` lens over the parcel example drew eleven pipes across three
+package boxes; with closure off it draws four pipes, one box, and five ports.
+
+Which is to say the `one package` rows were not perimeter views at all, despite that being the entire
+reason for having them. They pass `closure: "none"` now, and the property is readable from `views.json`
+too, so a derived lens is shorthand for something a reader could have written.
+
 ### 4.3 Focus
 
 A double tap, or `f` on the selection. Radius in **edges**, default **two**, adjustable with `+` and `-`.
@@ -795,14 +809,42 @@ is absolute, a runtime treats a point in the past as *now*, so a wrong one runs 
 already follows. No scenario file means no scenario to write into, and that is a fact about the tree
 rather than about the selection, so it is settled when the tree loads.
 
-### 9.7 What is still not here
+### 9.7 What the editor says about what it did
+
+Three things the page did and did not report, each of which read as a failure.
+
+**A write says what it wrote.** Write-through means there is no dialog to acknowledge and no dirty
+marker to notice (8.2), so the only evidence of a successful edit was the drawing changing — and under
+a lens it may not change at all, because what was just added is outside what the lens selects. The
+status line now names the edit, and names the lens when that is why it is not drawn. It is the one case
+where the graph cannot speak for itself.
+
+**A right click always opens the menu.** It was bound to Cytoscape's `cxttap`, which is a *tap*: it
+fires only when press and release land on the same spot, so a pixel of travel — a trackpad, a heavy
+hand — is classified as a drag and nothing happens. Nothing says so, which is what made it impossible
+to reproduce on purpose. It is bound to the native `contextmenu` now, and the node under the pointer is
+found from `renderedBoundingBox` by smallest containing box, so a service inside a package compound
+wins over the package around it.
+
+**Connecting shows where a click can land.** A crosshair cursor over an unchanged graph says that
+something is armed and nothing about where to aim it. What cannot be reached is dimmed: before an end
+is chosen that is the package boxes, the ports and the dead letters; after one it is half the graph,
+because the model is bipartite. The decision is `roleOf` — the same function the click handler accepts
+with, so what is drawn as reachable and what is accepted are one answer rather than two.
+
+**And there is a way to take something out.** `remove service` and `remove pipe` on the thing
+right-clicked, previewed like every other edit rather than done on the click. The row greys with the
+mutation's own reason, so a pipe something still emits to says which service, and the fix — a
+disconnect — is one row above it.
+
+### 9.8 What is still not here
+
+**An undo stack**, still. `invert` makes every operation invertible and costs nothing per operation, and
+there is now a destructive operation in the menu, which makes this the next thing rather than a nicety.
 
 **`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
 `views.json` atomically or it silently discards every saved position and lens entry naming the old name,
 and `moveToPackage` is the only mutation that can change a message's wire type.
-
-**An undo stack.** `invert` makes every operation invertible and costs nothing per operation, so this is a
-list and two buttons rather than a design problem — it is simply not written.
 
 **Adding a message or a record** from the composer, which is where it would belong.
 

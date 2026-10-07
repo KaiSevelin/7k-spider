@@ -108,7 +108,14 @@ export interface Rendered {
    * Holding shift always does, with no mode to be in; this is what the `n` key arms, so the discoverable
    * route and the quick one are the same gesture.
    */
-  setConnecting(on: boolean): void;
+  /**
+   * Arms or disarms connecting, and shows where a click can land.
+   *
+   * `from` is the end already chosen, when there is one: before it, both a service and a pipe are
+   * legal; after it, only the other kind is, because the graph is bipartite (section 3.1). Working
+   * that out here keeps it in one place — the same `roleOf` the click handler uses decides it.
+   */
+  setConnecting(on: boolean, from?: SelectionId, canReach?: (id: SelectionId) => boolean): void;
   /** The multi-selection, in the order it was built. */
   marked(): readonly SelectionId[];
   /** Replaces it. Anything the graph does not draw is dropped, so a stale id cannot linger. */
@@ -434,6 +441,20 @@ export const STYLE: cytoscape.StylesheetJson = [
     },
   },
 
+  // What a click would do while a connection is being made.
+  //
+  // Drawn as the absence of the usual drawing rather than as a new colour: `notATarget` dims what a
+  // click cannot reach, which leaves the targets at full strength without inventing a fourth meaning
+  // for an accent outline. Crosshair over nothing was the whole affordance before, which told a
+  // reader that something was armed and nothing about where to aim it.
+  { selector: ".notATarget", style: { opacity: 0.18 } },
+  {
+    // The end already chosen. Solid rather than `.marked`'s dashes, because it is one thing rather
+    // than a set, and it has to read differently from the targets it is waiting for.
+    selector: "node.connectFrom",
+    style: { "border-color": "var(--accent)", "border-width": 4, "z-index": 11 },
+  },
+
   // Dimming is a class on everything else rather than a style on the selection, so that an empty
   // highlight leaves the graph at full strength instead of dimming all of it.
   { selector: ".dimmed", style: { opacity: 0.22 } },
@@ -682,16 +703,33 @@ export function renderGraph(
   // is what lets "generate for these three" work without the sidebar jumping somewhere else.
   if (options.onContext !== undefined) {
     const onContext = options.onContext;
-    container.addEventListener("contextmenu", (e) => e.preventDefault());
 
-    cy.on("cxttap", "node", (e) => {
-      const id = e.target.id() as SelectionId;
-      onContext({ id, marked: [...marked] }, pointer(e));
-    });
+    // Driven from the native `contextmenu` rather than from Cytoscape's `cxttap`.
+    //
+    // `cxttap` is a *tap*: it fires only when the press and the release land on the same spot, so a
+    // pixel of travel between them — a trackpad, a heavy hand — is classified as a drag and the menu
+    // never opens. Nothing says so, which is exactly the "sometimes right-clicking does nothing" that
+    // is impossible to reproduce on purpose. A right click always opens the menu now.
+    //
+    // The cost is finding the node ourselves, which is `renderedBoundingBox` over the nodes and the
+    // smallest box that contains the pointer: smallest, so a service inside a package compound wins
+    // over the package that contains it, which is what was clicked.
+    container.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const box = container.getBoundingClientRect();
+      const x = e.clientX - box.left;
+      const y = e.clientY - box.top;
 
-    cy.on("cxttap", (e) => {
-      if (e.target !== cy) return;
-      onContext({ marked: [...marked] }, pointer(e));
+      let best: { id: SelectionId; area: number } | undefined;
+      for (const node of cy.nodes()) {
+        const b = node.renderedBoundingBox();
+        if (x < b.x1 || x > b.x2 || y < b.y1 || y > b.y2) continue;
+        const area = (b.x2 - b.x1) * (b.y2 - b.y1);
+        if (best === undefined || area < best.area) best = { id: node.id() as SelectionId, area };
+      }
+
+      const where = { x: e.clientX, y: e.clientY };
+      onContext(best === undefined ? { marked: [...marked] } : { id: best.id, marked: [...marked] }, where);
     });
   }
 
@@ -823,9 +861,24 @@ export function renderGraph(
     retheme() {
       cy.style(resolveStyle(STYLE, paletteOf(container)) as never);
     },
-    setConnecting(on) {
+    setConnecting(on, from, canReach) {
       connecting = on;
       if (!on) endDrag();
+
+      cy.elements().removeClass("notATarget connectFrom");
+      if (!on || canReach === undefined) return;
+
+      for (const node of cy.nodes()) {
+        const id = node.id() as SelectionId;
+        if (id === from) node.addClass("connectFrom");
+        else if (!canReach(id)) node.addClass("notATarget");
+      }
+      // An edge between two things that are both out of reach is out of reach too, so it dims with
+      // them rather than staying bright over a dimmed graph.
+      for (const edge of cy.edges()) {
+        const ends = [edge.source().id(), edge.target().id()] as SelectionId[];
+        if (ends.every((id) => id !== from && !canReach(id))) edge.addClass("notATarget");
+      }
     },
     marked: () => [...marked],
     setMarked(ids) {
