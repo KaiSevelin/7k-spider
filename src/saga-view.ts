@@ -39,6 +39,16 @@ export interface SagaViewOptions {
    * filled: there is nothing to go and find, because the thing that is missing is the thing you click.
    */
   readonly onSetUndo?: (step: string) => void;
+  /**
+   * Called when a terminal that announces nothing, or a missing deadline, is clicked.
+   *
+   * The band already draws all three terminals whether or not they were declared, and `no deadline`
+   * where there is none, for the same reason the cards draw their silences: a saga that can abandon
+   * and tells nobody is what a reader is looking for. So these are gaps on screen, and a gap on screen
+   * is where its edit starts.
+   */
+  readonly onSetTerminal?: (on: "complete" | "reject" | "abandon") => void;
+  readonly onSetDeadline?: () => void;
   /** Called with a declaration's selection id when a name in the diagram is clicked. */
   readonly onSelect?: (id: SelectionId) => void;
 }
@@ -344,18 +354,39 @@ export function renderSaga(
     );
     const deadline =
       d.deadlineMs === undefined ? "no deadline" : `deadline ${sayDuration(d.deadlineMs)} → abandon`;
-    band.append(text(deadline, { x: d.spineX + 4, y: d.terminalBand.y + 16, class: "band-note" }));
+    const deadlineLabel = text(deadline, {
+      x: d.spineX + 4,
+      y: d.terminalBand.y + 16,
+      class: d.deadlineMs === undefined ? "band-note silence" : "band-note",
+    });
+    const onSetDeadline = options.onSetDeadline;
+    if (d.deadlineMs === undefined && onSetDeadline !== undefined) {
+      deadlineLabel.classList.add("clickable");
+      deadlineLabel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onSetDeadline();
+      });
+    }
+    band.append(deadlineLabel);
 
     for (const t of d.terminals) {
       const row = el("g", { class: `terminal terminal-${t.on}`, "data-terminal": t.on });
       if (t.message === undefined) {
-        row.append(
-          text(`on ${t.on} — announces nothing`, {
-            x: d.spineX + 4,
-            y: t.y + 16,
-            class: "terminal-silent",
-          }),
-        );
+        const silent = text(`on ${t.on} — announces nothing`, {
+          x: d.spineX + 4,
+          y: t.y + 16,
+          class: "terminal-silent",
+        });
+        const onSetTerminal = options.onSetTerminal;
+        if (onSetTerminal !== undefined) {
+          silent.classList.add("clickable");
+          const on = t.on;
+          silent.addEventListener("click", (e) => {
+            e.stopPropagation();
+            onSetTerminal(on);
+          });
+        }
+        row.append(silent);
       } else {
         const label = text(`on ${t.on} send ${t.message.label}`, {
           x: d.spineX + 4,

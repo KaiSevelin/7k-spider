@@ -30,6 +30,8 @@ import {
   isPossible,
   lineColOf,
   qualify,
+  setDeadline,
+  setTerminal,
   setUndo,
   type CstNode,
   type Diagnostic,
@@ -490,8 +492,10 @@ function showSaga(saga: SagaIr): void {
       // Clicking a message in the diagram selects it everywhere else, which is the whole of what
       // "three views that agree" means here (`docs/design.md` 2.2).
       onSelect: (id) => select(id),
-      // The absence the view already draws is where the edit starts.
+      // The absences the view already draws are where their edits start.
       onSetUndo: (step) => startSetUndo(step),
+      onSetTerminal: (on) => startSetTerminal(on),
+      onSetDeadline: () => startSetDeadline(),
     });
   } else {
     // The model too: a declaration only resolves against the one it was linked with.
@@ -2229,6 +2233,112 @@ function startSetUndo(stepName: string): void {
   proposeBody.replaceChildren(form, preview);
   redraw();
   propose.hidden = false;
+}
+
+/**
+ * What the saga announces when it ends, from the row that says it announces nothing.
+ *
+ * The message is the host's `emits` again — a terminal `send` is routed like any other (D62), and
+ * `20-ir.md` D62 is why routing stays in one table rather than two.
+ */
+function startSetTerminal(on: "complete" | "reject" | "abandon"): void {
+  const where = editable();
+  if (where === undefined || model === undefined) return;
+
+  const saga = sagasOf(model).find((s) => qualify(s.id) === sagaWhich.value);
+  if (saga === undefined) return;
+
+  const sendable = sendableFrom(model, saga);
+  proposeWhat.textContent = `on ${on}, send`;
+
+  if (sendable.length === 0) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = "this saga's host emits nothing, so there is no message it could announce with";
+    proposeBody.replaceChildren(why);
+    proposeState.textContent = "";
+    proposeApply.hidden = true;
+    proposal = undefined;
+    propose.hidden = false;
+    return;
+  }
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+  const message = document.createElement("select");
+  message.title = `the message to send on ${on}`;
+  for (const name of sendable) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    message.append(option);
+  }
+  form.append(message);
+
+  const preview = document.createElement("div");
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const mutation = setTerminal(where, { saga: qualify(saga.id), on, message: message.value });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+  };
+  message.addEventListener("change", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+}
+
+/**
+ * The saga's own deadline, from the `no deadline` the band draws.
+ *
+ * Typed rather than chosen from a list, and with no default: a week and thirty seconds are both right
+ * for some saga, and a duration nobody picked is a decision nobody made. It matters more than it
+ * looks — a step with no `timeout` is legal exactly while this exists, because `saga-liveness` is an
+ * error rather than a warning.
+ */
+function startSetDeadline(): void {
+  const where = editable();
+  if (where === undefined || model === undefined) return;
+
+  const saga = sagasOf(model).find((s) => qualify(s.id) === sagaWhich.value);
+  if (saga === undefined) return;
+
+  proposeWhat.textContent = `a deadline for ${saga.id.name}`;
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+  const after = document.createElement("input");
+  after.type = "text";
+  after.placeholder = "how long, e.g. 24h";
+  after.autocomplete = "off";
+  form.append(after);
+
+  const preview = document.createElement("div");
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const typed = after.value.trim();
+    if (typed === "") {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent = "how long before the saga gives up";
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+    const mutation = setDeadline(where, { saga: qualify(saga.id), after: typed });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+    after.classList.toggle("bad", mutation.edits.length === 0);
+  };
+  after.addEventListener("input", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  after.focus();
 }
 
 // ---- search ----------------------------------------------------------------
