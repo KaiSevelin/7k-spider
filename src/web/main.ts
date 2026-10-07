@@ -56,6 +56,7 @@ import {
   type ScenarioFile,
 } from "@sevenk/core";
 import { edgeForEvent, isBadEvent, buildGraph, type Graph, type GraphOptions } from "../graph.js";
+import type { PlannedSymbol } from "@sevenk/generate";
 import {
   applyFocus,
   DEFAULT_RADIUS,
@@ -379,6 +380,20 @@ function describe(id: SelectionId | undefined): void {
       e.from === id ? e.to : e.from;
 
     if (node.kind === "service" || node.kind === "external") {
+      // Where each handler landed, when a provider has said. The one thing about a service the model
+      // cannot answer and the code can: the model says it reacts to `PlaceOrder`, and only the C#
+      // provider knows that is `HandlePlaceOrderAsync`. A breakpoint on that name stops in whatever
+      // class implements the interface, which is the reader's own.
+      const handlers = symbolsOf(node.qname);
+      if (handlers.length > 0) {
+        parts.push(
+          ...section(
+            "handlers",
+            handlers.map((h) => breakRow(h)),
+          ),
+        );
+      }
+
       parts.push(
         ...section(
           "emits",
@@ -416,6 +431,81 @@ function describe(id: SelectionId | undefined): void {
   sidebar.classList.add("open");
 }
 
+// ---- where the code is -----------------------------------------------------
+
+/**
+ * Where the generated code put things, from whichever providers say.
+ *
+ * Fetched once and lazily, not on load: it costs a whole plan, and most of the time nobody asks. A
+ * reload drops it, because a model that changed may have moved the handlers.
+ */
+let codeSymbols: readonly PlannedSymbol[] | undefined;
+let askingForSymbols = false;
+
+async function loadSymbols(): Promise<void> {
+  if (codeSymbols !== undefined || askingForSymbols) return;
+  askingForSymbols = true;
+  try {
+    const response = await fetch("/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ only: [] }),
+    });
+    const body = (await response.json()) as { symbols?: readonly PlannedSymbol[] };
+    codeSymbols = body.symbols ?? [];
+  } catch {
+    // A provider that cannot be loaded is not worth a message here: the generate menu already says so,
+    // and a sidebar section that is simply absent reads as "nobody said" rather than as a fault.
+    codeSymbols = [];
+  }
+  askingForSymbols = false;
+  // Whatever is selected now may have handlers to show that it did not a moment ago.
+  if (selection.k === "declaration") describe(selection.id);
+}
+
+/** The handlers one service's code declares, as the providers reported them. */
+const symbolsOf = (qname: string): readonly PlannedSymbol[] =>
+  (codeSymbols ?? []).filter((s) => s.kind === "handler" && s.on === qname);
+
+/**
+ * One handler, with the symbol a debugger would break on.
+ *
+ * The symbol is selectable text and a copy button rather than a link, because what to do with it
+ * depends on a debugger Spider is not part of. Setting the breakpoint directly needs a debug adapter,
+ * which a page cannot drive and an editor extension can — so this is the half that works everywhere,
+ * and it is the half that was missing.
+ */
+function breakRow(symbol: PlannedSymbol): HTMLElement {
+  const line = document.createElement("div");
+  line.className = "row handler";
+
+  const what = document.createElement("span");
+  what.textContent = bare(symbol.at);
+
+  const where = document.createElement("code");
+  where.textContent = symbol.symbol;
+  where.title = `${symbol.provider}${symbol.path === undefined ? "" : ` — ${symbol.path}`}`;
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "copy";
+  copy.textContent = "copy";
+  copy.title = "copy the symbol, to paste into a breakpoint";
+  copy.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void navigator.clipboard?.writeText(symbol.symbol).then(
+      () => {
+        copy.textContent = "copied";
+        setTimeout(() => (copy.textContent = "copy"), 1200);
+      },
+      () => undefined,
+    );
+  });
+
+  line.append(what, where, copy);
+  return line;
+}
+
 function select(id: SelectionId | undefined): void {
   // While a connection is being made, a click is the gesture rather than a selection.
   if (connecting() && id !== undefined && graph !== undefined) {
@@ -438,6 +528,8 @@ function select(id: SelectionId | undefined): void {
   // A port is not a declaration, so it cannot be a `declaration` selection — but it is worth opening
   // the sidebar for, because what it hides is the only thing it has to say.
   selection = id === undefined || isPort(id) ? { k: "none" } : { k: "declaration", id };
+  // Lazily, and only once: the first time anybody looks at something the code might have a name for.
+  if (id !== undefined && id.startsWith("service:")) void loadSymbols();
   applyHighlight();
   describe(id);
 
@@ -3617,6 +3709,8 @@ function draw(read: Sources): void {
   // The scenario files, for the `+` pickers. Not model IR — they reference a package (D62) — and
   // kept here because a form offering a scenario needs the names and the mocksets of each one.
   scenarioFiles = ws.scenarios;
+  // The model changed, so where its handlers landed may have too.
+  codeSymbols = undefined;
   model = ws.model;
   index = buildIndex(ws.model);
   fillSagas();

@@ -25,6 +25,7 @@ import {
   plan,
   type Freshness,
   type Manifest,
+  type PlannedSymbol,
   type Provider,
   type RunResult,
 } from "@sevenk/generate";
@@ -123,6 +124,14 @@ export interface PlanOutcome {
   readonly drift: Readonly<Record<Freshness, number>>;
   readonly refusals: readonly { provider: string; at: string; declared: string; because: string }[];
   readonly problems: readonly string[];
+  /**
+   * Where each declaration landed in the generated code, from every provider that says.
+   *
+   * What a page cannot work out for itself: the model says which service handles a message, and only
+   * the provider knows what it called the handler. This is what lets Spider point at the code — and,
+   * with a debug adapter, stop in it.
+   */
+  readonly symbols: readonly PlannedSymbol[];
 }
 
 /**
@@ -145,6 +154,7 @@ export async function planFor(
       files: [],
       drift: NOTHING,
       refusals: [],
+      symbols: [],
       problems: ["the model does not check out, so nothing was generated"],
     };
   }
@@ -156,6 +166,7 @@ export async function planFor(
       files: [],
       drift: NOTHING,
       refusals: [],
+      symbols: [],
       problems: [`no \`.7k/${MANIFEST}\` beside this model, so no providers are registered`],
     };
   }
@@ -167,6 +178,7 @@ export async function planFor(
       files: [],
       drift: NOTHING,
       refusals: [],
+      symbols: [],
       problems: manifestProblems.map((p) => `${p.at}: ${p.problem}`),
     };
   }
@@ -196,6 +208,9 @@ export async function planFor(
       because: r.refusal.because,
     })),
     problems: [...loadProblems, ...result.problems.map((p) => `${p.at}: ${p.problem}`)],
+    // Carried even when the run refused, as the run reports them: a symbol is a fact about what a
+    // provider calls things and is not made wrong by another provider failing.
+    symbols: result.symbols,
   };
 };
 

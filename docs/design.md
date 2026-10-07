@@ -884,7 +884,31 @@ the list offers what the operation accepts — the same rule the scenario picker
 role claimed twice ambiguous, so Core refuses the second claim; showing the row disabled says which
 roles this record already has, which is what you want to know while deciding what to add.
 
-### 9.10 Undo is a stack of writes, verified by the server
+### 9.10 Where the code is
+
+A service's sidebar lists its handlers: the message, the method the generated code calls it, and a
+button that copies the symbol.
+
+**Only a provider can say this.** The model says `reacts PlaceOrder from inbound`, so anyone can see
+that `OrderService` handles that message; nobody but the provider knows the handler is called
+`HandlePlaceOrderAsync`, because that name is the provider's own convention applied to the model. So it
+is reported through `GeneratedSymbol` rather than guessed at here — a page that worked it out would be
+learning one naming convention per target, which is the coupling 7k's D48 keeps out, and would be wrong
+the first time a provider's options changed the casing.
+
+**The method name, which is the right granularity.** The provider writes the interface; the class
+implementing it is the reader's own, with a name nothing here knows. A debugger's function breakpoint
+matches by name, so `HandlePlaceOrderAsync` stops in whatever class implements it — the one the reader
+wrote and wants to be stopped in.
+
+**A symbol and a copy button, not a link.** What to do with it depends on a debugger Spider is not part
+of. Setting the breakpoint directly needs a debug adapter, which a page cannot drive and an editor
+extension can; this is the half that works everywhere, and it is the half that was missing.
+
+Fetched lazily, on the first time anything that could have one is selected — it costs a whole plan — and
+dropped on reload, because a model that changed may have moved the handlers.
+
+### 9.11 Undo is a stack of writes, verified by the server
 
 `undo` and `redo` in the toolbar, ctrl-Z and ctrl-shift-Z, hidden when there is nothing for them to do.
 
@@ -913,7 +937,7 @@ edit is not it.
 rather than model (8.2), so an undo that silently moved a node back would answer a question nobody
 asked.
 
-### 9.11 What is still not here
+### 9.12 What is still not here
 
 **`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
 `views.json` atomically or it silently discards every saved position and lens entry naming the old name,
