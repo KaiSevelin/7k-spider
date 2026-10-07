@@ -43,6 +43,7 @@ import {
   setTerminal,
   setUndo,
   type CstNode,
+  type Decl,
   type Diagnostic,
   type Editable,
   type LinkedModel,
@@ -197,6 +198,14 @@ let forms: Forms = {};
 let formProblems: readonly string[] = [];
 /** The form being filled in, and the payload being built. Reset when the declaration changes. */
 let composing: Form | undefined;
+/**
+ * The canonical JSON the composer last produced, or nothing while the payload is invalid.
+ *
+ * Kept because the two buttons under the form hand it to `addPublish` and `addExpect`, and because
+ * "only when it is valid" is the rule `check` already follows: canonical JSON of something nobody
+ * agreed on would be a confident artifact about a payload the contract rejects.
+ */
+let composedBody: string | undefined;
 let payload: Record<string, import("@sevenk/core").JsonValue> = {};
 
 /**
@@ -1890,6 +1899,9 @@ function recheck(structural = false): void {
   composeOut.textContent =
     result.canonical ?? (byPath.get("")?.join("\n") ?? "fill in the fields above");
 
+  composedBody = result.canonical;
+  showComposeUse(decl);
+
   // Only when the shape changed. Typing re-marks what is wrong in the nodes already on the page, so
   // the input under the cursor is the same element afterwards and keeps both the focus and the caret.
   const render = { problems: byPath, onChange: recheck };
@@ -1922,6 +1934,48 @@ function toggleCompose(force?: boolean): void {
     // The nodes were left in place when the drawer was shut, so this only re-marks them.
     else recheck();
   }
+}
+
+/**
+ * Why the composed payload cannot be used in a scenario, or nothing.
+ *
+ * The composer's whole output is a valid body, and a scenario step is the one place in the language
+ * that takes one — so before this, the composer produced the exact text `addPublish` needed and the two
+ * were not joined up. Every publish an editor wrote was one a run refuses for want of a body.
+ */
+function whyNotUsable(decl: Decl, which: "publish" | "expect"): string | undefined {
+  if (decl.kind !== "message") return "only a message can go in a scenario step";
+  if (composedBody === undefined) return "fix what is wrong above first";
+  if (scenarioRows().length === 0) return "no scenario to put it in";
+  if (model === undefined) return "no model";
+  if (which === "publish" && emittersOf(model, decl.id).length === 0) {
+    return "nothing emits it, so there is no pipe to publish it on";
+  }
+  if (which === "expect" && carriersOf(model, decl.id).length === 0) {
+    return "it travels on no pipe, so there is nothing to expect it on";
+  }
+  return undefined;
+}
+
+function showComposeUse(decl: Decl): void {
+  const publish = el<HTMLButtonElement>("composePublish");
+  const expect = el<HTMLButtonElement>("composeExpect");
+  const why = whyNotUsable(decl, "publish") ?? whyNotUsable(decl, "expect");
+
+  publish.disabled = whyNotUsable(decl, "publish") !== undefined;
+  expect.disabled = whyNotUsable(decl, "expect") !== undefined;
+  // One reason, because the two buttons are off for the same reason almost always, and two lines of
+  // explanation under a form somebody is typing into is two lines they stop reading.
+  el("composeUseWhy").textContent = publish.disabled && expect.disabled ? (why ?? "") : "";
+}
+
+/** Hands the composed body to the scenario step flow, with the message already chosen. */
+function useComposed(which: "publish" | "expect"): void {
+  if (model === undefined || composing === undefined || composedBody === undefined) return;
+  const decl = model.decls.find((d) => `${d.id.kind}:${d.id.pkg}.${d.id.name}` === composing!.id);
+  if (decl === undefined) return;
+  toggleCompose(false);
+  startAddScenarioStep(which, { message: qualify(decl.id), payload: composedBody });
 }
 
 // ---- connecting ------------------------------------------------------------
@@ -2838,7 +2892,10 @@ function startAddScenario(kind: "scenario" | "soak"): void {
  * senders; an expectation offers the messages something carries and then that message's pipes; an
  * advance offers nothing, since how long to wait is the question being asked.
  */
-function startAddScenarioStep(kind: "publish" | "expect" | "advance"): void {
+function startAddScenarioStep(
+  kind: "publish" | "expect" | "advance",
+  preset?: { readonly message: string; readonly payload: string },
+): void {
   const where = editable();
   if (where === undefined || model === undefined) return;
 
@@ -2907,7 +2964,9 @@ function startAddScenarioStep(kind: "publish" | "expect" | "advance"): void {
       option.textContent = name;
       message.append(option);
     }
-    if (offerable().includes(keep)) message.value = keep;
+    // The preset wins over what was last chosen: it is why the panel opened.
+    const wanted = preset?.message ?? keep;
+    if (offerable().includes(wanted)) message.value = wanted;
   };
 
   /** The senders of the chosen message, or the pipes it travels on. */
@@ -2987,6 +3046,11 @@ function startAddScenarioStep(kind: "publish" | "expect" | "advance"): void {
             file: row.file,
             message: message.value,
             ...(second.value === "" ? {} : { as: second.value }),
+            // Only while it is still the message the body was composed for: changing the picker means
+            // the body no longer describes what is being sent.
+            ...(preset !== undefined && preset.message === message.value
+              ? { payload: preset.payload }
+              : {}),
           })
         : addExpect(where, {
             scenario: row.name,
@@ -2994,6 +3058,10 @@ function startAddScenarioStep(kind: "publish" | "expect" | "advance"): void {
             message: message.value,
             ...(second.value === "" ? {} : { pipe: second.value }),
             ...(negate.checked ? { negated: true } : {}),
+            // Not beside `no`: a body narrows what counts as a match, and Core refuses the pair.
+            ...(preset !== undefined && preset.message === message.value && !negate.checked
+              ? { payload: preset.payload }
+              : {}),
           });
     proposeWhat.textContent = mutation.describe;
     showMutation(mutation, preview);
@@ -3480,6 +3548,8 @@ el("proposeClose").addEventListener("click", closeProposal);
 proposeApply.addEventListener("click", () => void applyProposal());
 el("composeClose").addEventListener("click", () => toggleCompose(false));
 composeWhat.addEventListener("change", startComposing);
+el("composePublish").addEventListener("click", () => useComposed("publish"));
+el("composeExpect").addEventListener("click", () => useComposed("expect"));
 el("run").addEventListener("change", () => selectRun());
 el("playPause").addEventListener("click", () => player?.toggle());
 el("stepOn").addEventListener("click", () => player?.step(1));

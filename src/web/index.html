@@ -414,6 +414,7 @@
       .panelHead button:hover { background: var(--package); }
 
       #composeForm { flex: 1; overflow: auto; padding: 10px; }
+      #composeUseWhy { flex: 1; color: var(--ink-dim); }
       #composeOut {
         margin: 0;
         max-height: 34%;
@@ -1204,6 +1205,15 @@
         </header>
         <div id="composeForm"></div>
         <pre id="composeOut"></pre>
+        <footer class="panelFoot">
+          <span id="composeUseWhy"></span>
+          <button type="button" id="composePublish" title="publish this into a scenario">
+            publish&hellip;
+          </button>
+          <button type="button" id="composeExpect" title="assert this arrives, in a scenario">
+            expect&hellip;
+          </button>
+        </footer>
       </aside>
       <aside id="sidebar"></aside>
       <div id="open" hidden>

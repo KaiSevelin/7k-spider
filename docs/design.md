@@ -837,7 +837,31 @@ right-clicked, previewed like every other edit rather than done on the click. Th
 mutation's own reason, so a pipe something still emits to says which service, and the fix — a
 disconnect — is one row above it.
 
-### 9.8 Undo is a stack of writes, verified by the server
+### 9.8 The composer's body goes into a scenario
+
+Two buttons under the form — `publish…` and `expect…` — hand the canonical JSON to `addPublish` and
+`addExpect` with the message already chosen.
+
+This was the obvious join and the longest-missing one. The composer's whole output is a valid body
+(7.2), a scenario step is the one place in the language that takes one, and the two were not connected
+— so every publish written from the editor was one a run refuses for want of a body, and
+`publish-without-body` was a warning you could do nothing about from here.
+
+**Only while the payload is valid**, which is `check`'s own rule: canonical JSON of something the
+contract rejects would be a confident artifact about a payload nobody agreed on. The buttons are
+disabled with the reason beside them — no scenario to put it in, nothing emits it, or fix what is wrong
+above first.
+
+**And only while it is still the message the body was composed for.** Changing the message in the step
+form drops the body, because a body composed for `Place` says nothing about `Reorder`. A test pins that,
+since the alternative failure is silent and wrong.
+
+`expect` takes the same body as a **partial** match, which is section 5's own default: asserting every
+field makes a scenario brittle to additive changes, and those are explicitly non-breaking. A body beside
+`no` is refused by Core — it narrows what counts as a match, so `no` beside one asks whether none of a
+particular shape arrived.
+
+### 9.9 Undo is a stack of writes, verified by the server
 
 `undo` and `redo` in the toolbar, ctrl-Z and ctrl-shift-Z, hidden when there is nothing for them to do.
 
@@ -866,18 +890,13 @@ edit is not it.
 rather than model (8.2), so an undo that silently moved a node back would answer a question nobody
 asked.
 
-### 9.9 What is still not here
+### 9.10 What is still not here
 
 **`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
 `views.json` atomically or it silently discards every saved position and lens entry naming the old name,
 and `moveToPackage` is the only mutation that can change a message's wire type.
 
 **Adding a message or a record** from the composer, which is where it would belong.
-
-**A publish's body**, and with it `expect ... { fields }`. `addPublish` writes the clause and says when a
-message still wants a body; the composer already produces canonical JSON and the two are not joined up.
-That join is the one piece worth doing next, because until it exists every publish written from here is
-one a run refuses.
 
 **A scenario view.** These flows reach a scenario through a picker, not through anything drawn. A scenario
 is a script on a clock and the sequence diagram already draws one of those from a trace, so the shape is

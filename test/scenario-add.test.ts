@@ -320,3 +320,82 @@ describe("adding an advance, and a scenario", () => {
     expect(await readFile(scenarios, "utf-8")).toBe(SCENARIOS);
   }, 90_000);
 });
+
+/**
+ * The composer, joined to a scenario step.
+ *
+ * The composer's whole output is a valid body and a scenario step is the one place in the language that
+ * takes one, and until now the two were not joined up — so every publish written from the editor was
+ * one a run refuses for want of a body. These assert the join, and the two cases where it must not be
+ * offered: an invalid payload, and a message with nowhere to go.
+ */
+describe("the composer's body in a scenario", () => {
+  const fill = async (p: Page, value: string): Promise<void> => {
+    await p.click("#toggleCompose");
+    await p.waitForSelector("#composeForm input");
+    await p.selectOption("#composeWhat", "message:shop.Place");
+    await p.waitForTimeout(300);
+    await p.locator("#composeForm input").first().fill(value);
+    await p.waitForTimeout(400);
+  };
+
+  it("offers nothing while the payload is not valid, and says why", async () => {
+    if (!ready) return;
+    const p = await open();
+    await fill(p, "not-a-uuid");
+    expect(await p.locator("#composePublish").isDisabled()).toBe(true);
+    expect(await p.locator("#composeUseWhy").textContent()).toContain("fix what is wrong");
+  }, 90_000);
+
+  it("writes the publish with the body the composer produced", async () => {
+    if (!ready) return;
+    const p = await open();
+    await fill(p, "11111111-2222-3333-4444-555555555555");
+    expect(await p.locator("#composeState").textContent()).toBe("valid");
+    expect(await p.locator("#composePublish").isDisabled()).toBe(false);
+
+    await p.click("#composePublish");
+    await p.waitForSelector("#addForm");
+    const shown = (await p.locator("#proposeBody pre").first().textContent()) ?? "";
+    expect(shown).toContain("publish Place as Storefront");
+    expect(shown).toContain("11111111-2222-3333-4444-555555555555");
+
+    await p.click("#proposeApply");
+    await p.waitForTimeout(1500);
+    const after = await readFile(scenarios, "utf-8");
+    expect(after).toContain("publish Place as Storefront");
+    expect(after).toContain("11111111-2222-3333-4444-555555555555");
+  }, 90_000);
+
+  it("writes an expectation with the same body, which is a partial match", async () => {
+    if (!ready) return;
+    const p = await open();
+    await fill(p, "11111111-2222-3333-4444-555555555555");
+    // `Place` goes on `inbound`, so there is a pipe to expect it on.
+    expect(await p.locator("#composeExpect").isDisabled()).toBe(false);
+
+    await p.click("#composeExpect");
+    await p.waitForSelector("#addForm");
+    await p.click("#proposeApply");
+    await p.waitForTimeout(1500);
+    const after = await readFile(scenarios, "utf-8");
+    expect(after).toContain("expect Place on inbound");
+    expect(after).toContain("11111111-2222-3333-4444-555555555555");
+    // Partial by default: section 5's own default, and not `exactly`.
+    expect(after).not.toContain("exactly");
+  }, 90_000);
+
+  it("drops the body when the message is changed out from under it", async () => {
+    if (!ready) return;
+    const p = await open();
+    await fill(p, "11111111-2222-3333-4444-555555555555");
+    await p.click("#composePublish");
+    await p.waitForSelector("#addForm");
+    // A body composed for `Place` says nothing about `Reorder`.
+    await p.selectOption("#addForm select >> nth=1", "shop.Reorder");
+    await p.waitForTimeout(300);
+    const shown = (await p.locator("#proposeBody pre").first().textContent()) ?? "";
+    expect(shown).toContain("publish Reorder");
+    expect(shown).not.toContain("11111111-2222-3333-4444-555555555555");
+  }, 90_000);
+});
