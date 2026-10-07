@@ -31,13 +31,21 @@ const NS = "http://www.w3.org/2000/svg";
 const CHAR = 6.7;
 
 export interface SagaViewOptions {
+  /**
+   * Called with a step's name when its `no inverse` is clicked.
+   *
+   * The absence is already drawn, on the grounds that the Process layer's two silences are what a
+   * reader must not have to notice are missing. Given this, the drawing is also where the gap is
+   * filled: there is nothing to go and find, because the thing that is missing is the thing you click.
+   */
+  readonly onSetUndo?: (step: string) => void;
   /** Called with a declaration's selection id when a name in the diagram is clicked. */
   readonly onSelect?: (id: SelectionId) => void;
 }
 
 export interface SagaView {
   /** Replaces the saga being drawn. `undefined` empties the view. */
-  update(saga: SagaIr | undefined): void;
+  update(model: LinkedModel, saga: SagaIr | undefined): void;
   /** Emphasises the declarations a highlight names, and dims the rest. */
   highlight(h: Highlight | undefined): void;
   /** Draws one instance's progress over the declaration, or clears it. */
@@ -73,6 +81,8 @@ const text = (
 
 export function renderSaga(
   container: HTMLElement,
+  // Reassigned by `update`, because a saga and the model it resolves against travel together.
+  // eslint-disable-next-line prefer-const
   model: LinkedModel,
   saga: SagaIr | undefined,
   options: SagaViewOptions = {},
@@ -164,21 +174,33 @@ export function renderSaga(
       group.append(text("no timeout", { x: card.x + 10, y: footY - 19, class: "silence" }));
     }
     if (card.undo.k === "with") {
+      const message = card.undo.message;
       const label = text(
-        `undo with ${card.undo.message.label}`,
+        `undo with ${message?.label ?? card.undo.text}`,
         { x: card.x + 10, y: footY, class: "undo" },
         card.width - 28,
       );
       group.append(label);
-      selectable(label, card.undo.message.id);
+      // Only when it resolves: there is nothing to select in a name that names nothing.
+      if (message !== undefined) selectable(label, message.id);
     } else {
-      group.append(
-        text(card.undo.k === "none" ? "undo none" : "no inverse", {
-          x: card.x + 10,
-          y: footY,
-          class: `undo undo-${card.undo.k}`,
-        }),
-      );
+      const label = text(card.undo.k === "none" ? "undo none" : "no inverse", {
+        x: card.x + 10,
+        y: footY,
+        class: `undo undo-${card.undo.k}`,
+      });
+      // Only the absence is an invitation. A declared `undo none` is an answer somebody gave, and
+      // offering to change it here would make a decision look like a gap.
+      const onSetUndo = options.onSetUndo;
+      if (card.undo.k === "absent" && onSetUndo !== undefined) {
+        label.classList.add("clickable");
+        const name = card.name;
+        label.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onSetUndo(name);
+        });
+      }
+      group.append(label);
     }
 
     cards.set(card.name, group);
@@ -389,7 +411,16 @@ export function renderSaga(
   };
 
   return {
-    update(next) {
+    /**
+     * Both, always.
+     *
+     * Resolution is keyed by the `Ref` object itself (`link.ts`), so a declaration only means anything
+     * beside the model it was linked with. This took the saga and kept the model it was built with, so
+     * after any edit it laid out fresh declarations against a stale model and *every* reference in them
+     * failed to resolve — which mostly degraded to a bare name, and once to a lie.
+     */
+    update(nextModel, next) {
+      model = nextModel;
       laid = next === undefined ? undefined : layoutSaga(model, next);
       draw();
     },

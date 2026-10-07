@@ -295,6 +295,9 @@ describe("the silences", () => {
     const d = diagram();
     expect(card(d, "hold")?.undo).toEqual({
       k: "with",
+      // As written, kept beside the resolved message so a reference that resolves to nothing is still
+      // drawn as the inverse somebody declared rather than as one nobody did.
+      text: "Release",
       message: { qname: "acme.shop.Release", label: "Release", id: "message:acme.shop.Release" },
       carries: 0,
     });
@@ -302,6 +305,26 @@ describe("the silences", () => {
     // `ship` is the last step, so declaring nothing is not a warning — but the card still says so,
     // because "this cannot be unwound" is what a reader is looking for either way.
     expect(card(d, "ship")?.undo).toEqual({ k: "absent" });
+  });
+
+  /**
+   * A fourth case the three states have to keep apart.
+   *
+   * An inverse whose message does not resolve is a declared inverse that is broken, which is neither
+   * `none` nor `absent`. Reporting it as absent said nobody had declared one — the one thing that was
+   * certainly false — and it is what the view then offered to fill in for you.
+   */
+  it("keeps a broken inverse a `with`, not an absence", () => {
+    // Built without the usual no-errors check, because an unresolved reference *is* an error — which
+    // is the state this is about: the model is broken, and the view must say which way.
+    const broken = buildWorkspace([
+      { path: "shop.7k", source: MODEL.replace("undo with Release", "undo with Nowhere") },
+    ]);
+    const d = layoutSaga(broken.model, only(broken.model));
+    const undo = card(d, "hold")?.undo;
+    expect(undo?.k).toBe("with");
+    expect(undo?.k === "with" && undo.text).toBe("Nowhere");
+    expect(undo?.k === "with" && undo.message).toBeUndefined();
   });
 
   it("marks a step with no timeout of its own", () => {

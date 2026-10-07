@@ -165,3 +165,94 @@ describe("the proposal is reachable", () => {
     expect(onTop).toBe("propose");
   }, 60_000);
 });
+
+/**
+ * The inverse a step does not declare, filled from the gap the view already draws.
+ *
+ * The saga view writes `no inverse` where a step has no `undo`, because the Process layer's two
+ * silences are what a reader must not have to notice are missing. So there is nothing to go and find:
+ * the thing that is missing is the thing you click.
+ *
+ * A declared `undo none` is deliberately *not* clickable. It is an answer somebody gave, and offering
+ * to change it in the same gesture would make a decision look like a gap.
+ */
+describe("filling in an inverse", () => {
+  /** Adds a step, which is written with no inverse, and hands back its gap. */
+  const withAGap = async (): Promise<Page> => {
+    const p = await openSaga();
+    await fill(p, "recheck", "parcel.delivery.ReserveCompartment", "45s");
+    await p.click("#proposeApply");
+    await p.locator(GAP).waitFor({ timeout: 15_000 });
+    return p;
+  };
+
+  const GAP = '#sagaCanvas .card[data-step="recheck"] .undo-absent';
+
+  it("draws the gap on the steps that have one, and no others", async () => {
+    if (!ready) return;
+    const p = await withAGap();
+    expect(await p.locator(GAP).textContent()).toBe("no inverse");
+
+    // By step rather than by count: which steps a saga has is this test's business only in that the
+    // ones that declared an inverse must not be offered as though they had not.
+    const gaps = await p
+      .locator("#sagaCanvas .undo-absent")
+      .evaluateAll((els) => els.map((e) => e.closest(".card")?.getAttribute("data-step") ?? "?"));
+    expect(gaps).toContain("recheck");
+    expect(gaps).not.toContain("reserve"); // undo with ReleaseCompartment
+    expect(gaps).not.toContain("verify"); // undo none
+    expect(gaps).not.toContain("handover"); // undo none
+  }, 90_000);
+
+  it("does not offer to change an `undo none` somebody wrote", async () => {
+    if (!ready) return;
+    const p = await withAGap();
+    const declared = p.locator("#sagaCanvas .undo-none").first();
+    expect(await declared.textContent()).toBe("undo none");
+    expect((await declared.getAttribute("class")) ?? "").not.toContain("clickable");
+  }, 90_000);
+
+  it("opens on the step it was clicked on", async () => {
+    if (!ready) return;
+    const p = await withAGap();
+    await p.locator(GAP).click();
+    await p.waitForSelector("#propose:not([hidden])");
+    expect(await p.locator("#proposeWhat").textContent()).toContain("recheck");
+  }, 90_000);
+
+  /** Two answers, because an absent `undo` is neither of them. */
+  it("previews both answers", async () => {
+    if (!ready) return;
+    const p = await withAGap();
+    await p.locator(GAP).click();
+    await p.waitForSelector("#addForm");
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain("undo none");
+
+    await p.locator("#addForm select").first().selectOption("with");
+    await p.waitForTimeout(300);
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain("undo with");
+  }, 90_000);
+
+  it("writes it inside the step, and the model still checks out", async () => {
+    if (!ready) return;
+    const p = await withAGap();
+    await p.locator(GAP).click();
+    await p.waitForSelector("#addForm");
+    await p.click("#proposeApply");
+    await p.waitForTimeout(1400);
+
+    const after = await readFile(join(dir, "delivery.7k"), "utf-8");
+    const step = after.slice(after.indexOf("step recheck"), after.indexOf("on deadline"));
+    expect(step).toContain("undo none");
+    expect((await p.locator("#problemsCount").textContent())?.trim()).toBe("no problems");
+  }, 90_000);
+
+  it("writes nothing until the preview is accepted", async () => {
+    if (!ready) return;
+    const p = await withAGap();
+    const before = await readFile(join(dir, "delivery.7k"), "utf-8");
+    await p.locator(GAP).click();
+    await p.waitForSelector("#addForm");
+    expect(await readFile(join(dir, "delivery.7k"), "utf-8")).toBe(before);
+  }, 90_000);
+});

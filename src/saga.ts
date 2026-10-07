@@ -98,7 +98,14 @@ export interface Outcome {
  * `undo none`, and nothing at all.
  */
 export type Undo =
-  | { readonly k: "with"; readonly message: MessageRef; readonly carries: number }
+  | {
+      readonly k: "with";
+      /** As written, so a reference that does not resolve is still shown as the inverse it is. */
+      readonly text: string;
+      /** Absent when the reference does not resolve: there is a name but nothing to select. */
+      readonly message?: MessageRef;
+      readonly carries: number;
+    }
   | { readonly k: "none" }
   | { readonly k: "absent" };
 
@@ -237,13 +244,26 @@ const sendOf = (
   return { ...(message === undefined ? {} : { message }), carries: send.assigns.length };
 };
 
+/**
+ * What undoes a step, as the view has to draw it.
+ *
+ * The three states are different claims and must stay different: `with` is an inverse, `none` is
+ * somebody saying there is nothing to take back, and `absent` is nobody having said. A reference that
+ * does not resolve is **none of those** — it is a declared inverse that is broken — so it stays `with`
+ * and carries the text that was written. Reporting it as `absent` said nobody had declared one, which
+ * is the one thing that was certainly false, and it is what the view would then have offered to fill
+ * in for you.
+ */
 const undoOf = (model: LinkedModel, step: StepIr): Undo => {
   if (step.undo === undefined) return { k: "absent" };
   if (step.undo === null) return { k: "none" };
   const message = messageRef(model, step.undo.message);
-  return message === undefined
-    ? { k: "absent" }
-    : { k: "with", message, carries: step.undo.assigns.length };
+  return {
+    k: "with",
+    text: step.undo.message.text,
+    ...(message === undefined ? {} : { message }),
+    carries: step.undo.assigns.length,
+  };
 };
 
 /** The row an `on <Message>` clause becomes. */

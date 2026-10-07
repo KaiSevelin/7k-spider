@@ -30,6 +30,7 @@ import {
   isPossible,
   lineColOf,
   qualify,
+  setUndo,
   type CstNode,
   type Diagnostic,
   type Editable,
@@ -489,9 +490,12 @@ function showSaga(saga: SagaIr): void {
       // Clicking a message in the diagram selects it everywhere else, which is the whole of what
       // "three views that agree" means here (`docs/design.md` 2.2).
       onSelect: (id) => select(id),
+      // The absence the view already draws is where the edit starts.
+      onSetUndo: (step) => startSetUndo(step),
     });
   } else {
-    sagaView.update(saga);
+    // The model too: a declaration only resolves against the one it was linked with.
+    sagaView.update(model, saga);
   }
   applyHighlight();
   refreshSagaProgress();
@@ -2143,6 +2147,88 @@ function startAddStep(): void {
   redraw();
   propose.hidden = false;
   name.focus();
+}
+
+/**
+ * Filling in a step's inverse, from the gap the saga view already draws.
+ *
+ * Two answers, because they are two answers: `undo with M` says what taking this step back looks
+ * like, and `undo none` says there is nothing to take back. An absent `undo` is neither — it is nobody
+ * having said — which is why the view draws `no inverse` rather than nothing at all, and why this
+ * offers both rather than assuming the common one.
+ *
+ * The message list is the host's `emits` again: an inverse is a `send` like any other, so it is routed
+ * the same way (D62) and can only be something the saga is able to send.
+ */
+function startSetUndo(stepName: string): void {
+  const where = editable();
+  if (where === undefined || model === undefined) return;
+
+  const saga = sagasOf(model).find((s) => qualify(s.id) === sagaWhich.value);
+  if (saga === undefined) return;
+
+  proposeWhat.textContent = `${stepName}: what undoes it`;
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+
+  const what = document.createElement("select");
+  what.title = "what taking this step back looks like";
+  for (const [value, label] of [
+    ["none", "nothing to take back"],
+    ["with", "send a message"],
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    what.append(option);
+  }
+
+  const message = document.createElement("select");
+  message.title = "the message that undoes it";
+  for (const name of sendableFrom(model, saga)) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    message.append(option);
+  }
+  message.hidden = true;
+
+  form.append(what, message);
+  const preview = document.createElement("div");
+
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const sending = what.value === "with";
+    message.hidden = !sending;
+
+    if (sending && message.options.length === 0) {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent =
+        "this saga's host emits nothing, so there is no message it could send to undo anything";
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+
+    const mutation = setUndo(where, {
+      saga: qualify(saga.id),
+      step: stepName,
+      ...(sending ? { message: message.value } : {}),
+    });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+  };
+
+  what.addEventListener("change", redraw);
+  message.addEventListener("change", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
 }
 
 // ---- search ----------------------------------------------------------------
