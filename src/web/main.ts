@@ -31,6 +31,7 @@ import {
   carriersOf,
   removePipe,
   removeService,
+  rename,
   connectEmit,
   emittersOf,
   connectReact,
@@ -102,6 +103,14 @@ import {
 
 interface Sources {
   readonly files: readonly { readonly path: string; readonly source: string }[];
+  /**
+   * `layout.json` and `views.json` as their own files, for the one operation that edits them.
+   *
+   * Not parsed and not drawn from — the page reads what it *uses* from `/layout.json` and
+   * `/views.json`, merged across roots. These are the bytes a `rename` is computed against, in the
+   * same `sources` map as the model files so the edit is one request (7k's D98).
+   */
+  readonly sidecars?: readonly { readonly path: string; readonly source: string }[];
 }
 
 const el = <T extends HTMLElement>(id: string): T => {
@@ -1121,6 +1130,21 @@ function openMenu(
   // how a greyed row can say "`DeliveryService` emits to it — disconnect those first" instead of
   // "cannot be removed".
   const clicked = at.id === undefined ? undefined : model?.decls.find((d) => idOf(d) === at.id);
+
+  // Renaming comes first, above removing, because it is the one somebody reaches for by accident far
+  // less often and by intent far more.
+  if (clicked !== undefined && RENAMEABLE_HERE.has(clicked.kind)) {
+    const target = clicked;
+    rows.push(
+      item(
+        `rename ${target.kind} ${target.id.name}`,
+        target.kind === "message" ? "its qualified name is the wire type" : `in ${target.id.pkg}`,
+        () => startRename(target),
+        editable() === undefined ? "no model to edit" : undefined,
+      ),
+    );
+  }
+
   if (clicked !== undefined && (clicked.kind === "service" || clicked.kind === "pipe")) {
     const target = clicked;
     const place = editable();
@@ -1201,6 +1225,66 @@ function openMenu(
   const y = where.y - main.top;
   menu.style.left = `${Math.max(0, Math.min(x, main.width - box.width - 8))}px`;
   menu.style.top = `${Math.max(0, Math.min(y, main.height - box.height - 8))}px`;
+}
+
+/** What the graph draws and `rename` will take. A package is neither. */
+const RENAMEABLE_HERE = new Set(["service", "pipe", "message", "saga", "record", "value", "enum"]);
+
+/**
+ * Renaming, typed into the panel every other edit goes through.
+ *
+ * **The preview is the whole point here.** A rename touches every file that names the thing, and the
+ * two that key on it — `layout.json` and `views.json`, which is the half D98 said matters — so what a
+ * reader wants before accepting is the list of files, not a yes/no. `showMutation` already draws one
+ * block per edited file, so that comes for free; what this adds is the count, because twenty edits
+ * across four files is the number that tells you the rename found what it was looking for.
+ */
+function startRename(decl: { kind: string; id: { name: string; pkg: string } }): void {
+  closeMenu();
+  const where = editable();
+  if (where === undefined) return;
+
+  proposeWhat.textContent = `rename ${decl.id.name}`;
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+  const to = document.createElement("input");
+  to.type = "text";
+  to.value = decl.id.name;
+  to.placeholder = "the new name";
+  to.autocomplete = "off";
+  form.append(to);
+
+  const preview = document.createElement("div");
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const typed = to.value.trim();
+    if (typed === "" || typed === decl.id.name) {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent = typed === "" ? "type the new name" : "that is the name it already has";
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+    const mutation = rename(where, { decl: `${decl.id.pkg}.${decl.id.name}`, to: typed });
+    const files = new Set(mutation.edits.map((e) => e.file)).size;
+    proposeWhat.textContent =
+      mutation.edits.length === 0
+        ? mutation.describe
+        : `${mutation.describe} — ${mutation.edits.length} edits in ${files} file${files === 1 ? "" : "s"}`;
+    showMutation(mutation, preview);
+    to.classList.toggle("bad", mutation.edits.length === 0);
+  };
+  to.addEventListener("input", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  to.focus();
+  to.select();
 }
 
 /**
@@ -3191,7 +3275,11 @@ function draw(read: Sources): void {
   codeFiles = read.files;
   // The text a mutation is computed against. Named distinctly from the parameter, because shadowing it
   // left `sources` empty and every mutation would have been computed against nothing.
-  sources = Object.fromEntries(read.files.map((f) => [f.path, f.source]));
+  // The sidecars are in here and not in what gets parsed: a mutation only touches the files it decides
+  // to, and `rename` is the one that decides to touch these.
+  sources = Object.fromEntries(
+    [...read.files, ...(read.sidecars ?? [])].map((f) => [f.path, f.source]),
+  );
   // Kept as the mutation API wants them: the text a mutation is computed against, and the trees it finds
   // its insertion points in.
   const ws = buildWorkspace(read.files.map((f) => ({ path: f.path, source: f.source })));

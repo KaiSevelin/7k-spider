@@ -162,6 +162,16 @@ async function writeSources(
   }
 
   const allowed = new Set(await collect(paths));
+  // The two sidecars, so a `rename` reaches them in the same request as the model files it is
+  // renaming in. 7k's D98 is the whole reason: "a rename that missed them would silently discard every
+  // saved position and every lens entry that named the old one", and two requests would mean a window
+  // in which exactly half of that had happened. `layout.json` has its own endpoint for a drag, which
+  // writes it whole; this is for the case where it is one file among several in one edit.
+  for (const name of ["layout.json", "views.json"]) {
+    const side = await sidecarPath(paths, name);
+    if (side !== undefined) allowed.add(side);
+  }
+
   const entries = Object.entries(parsed.files);
   if (entries.length === 0) return { ok: false, problem: "no files to write" };
 
@@ -187,7 +197,11 @@ async function writeSources(
 
   const wrote: string[] = [];
   for (const [file, { after }] of entries) {
-    await writeFile(resolvePath(file), after, "utf-8");
+    const path = resolvePath(file);
+    // A sidecar may not exist yet, and `mkdir` is what makes writing one as part of an edit work the
+    // same way the dedicated endpoint does.
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, after, "utf-8");
     wrote.push(file);
   }
   return { ok: true, wrote };
@@ -735,7 +749,19 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     }
 
     if (url.pathname === "/sources.json") {
-      const body = JSON.stringify({ files: await files() });
+      // The sidecars come along, as their own files rather than merged, because `rename` edits them in
+      // the same request as the model (7k's D98) and an edit needs the text it is computed against. The
+      // merged read at `/layout.json` is what the page *uses*; this is what it edits. With one served
+      // root — the normal case — they are the same bytes. With several, `sidecarPath` names the first
+      // root's, so a rename reaches that one.
+      const sidecars = [];
+      for (const name of ["layout.json", "views.json"]) {
+        const path = await sidecarPath(paths, name);
+        if (path === undefined) continue;
+        const source = await readFile(path, "utf-8").catch(() => undefined);
+        if (source !== undefined) sidecars.push({ path, source });
+      }
+      const body = JSON.stringify({ files: await files(), sidecars });
       res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
       res.end(body);
       return;
