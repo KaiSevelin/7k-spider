@@ -837,10 +837,36 @@ right-clicked, previewed like every other edit rather than done on the click. Th
 mutation's own reason, so a pipe something still emits to says which service, and the fix — a
 disconnect — is one row above it.
 
-### 9.8 What is still not here
+### 9.8 Undo is a stack of writes, verified by the server
 
-**An undo stack**, still. `invert` makes every operation invertible and costs nothing per operation, and
-there is now a destructive operation in the menu, which makes this the next thing rather than a nicety.
+`undo` and `redo` in the toolbar, ctrl-Z and ctrl-shift-Z, hidden when there is nothing for them to do.
+
+**The entries hold whole files, not inverse edits**, which is a departure from `20-ir.md` 7.1's "a
+command stack of inverse mutations" worth stating. That sentence's point is that undo must not be a
+dirty editor buffer, and this is not one: nothing here is unsaved and every entry is a write that
+already happened. What an entry holds instead is the shape `/mutate` already takes — `{ before, after }`
+per file — so taking an edit back is that pair swapped and no offset is recomputed.
+
+The difference matters for the only part that is hard. `invert` computes an inverse from the text the
+edit applied to, so an inverse edit is valid only while the file still looks as it did; if anything else
+touched it in between, the offsets land elsewhere and the undo corrupts the file. The check that stops
+that is one `writeSources` already makes — it refuses with 409 unless what is on disk equals `before`
+(8.2's rule, which this inherits for free). With that check in place an inverse edit and a swapped
+snapshot are equally safe, so the stack holds the thing the server can verify. `invert` remains the
+right answer for a consumer whose writes *are* edits, such as an LSP; Spider's writes are files.
+
+**A refusal drops the whole history**, and says which file and why. If the text underneath one entry has
+moved on, every older entry for that file has too, so there is nothing below it worth offering. An undo
+button that silently stops working is worse than one that explains itself once.
+
+**A new edit ends the redo branch**, because what was redoable was an alternative future and the new
+edit is not it.
+
+**Layout and lens writes are not in it.** They go to their own endpoints and they are presentation
+rather than model (8.2), so an undo that silently moved a node back would answer a question nobody
+asked.
+
+### 9.9 What is still not here
 
 **`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
 `views.json` atomically or it silently discards every saved position and lens entry naming the old name,

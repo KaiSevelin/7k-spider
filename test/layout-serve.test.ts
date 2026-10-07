@@ -150,7 +150,16 @@ describe("the loop a write creates", () => {
     // Well clear of the last write's window.
     await new Promise((done) => setTimeout(done, 600));
     await writeFile(join(dir, "shop.7k"), `${MODEL}\n// touched\n`, "utf-8");
-    await new Promise((done) => setTimeout(done, 900));
+
+    // Waited for rather than slept through. The chain is a filesystem event, a 60ms debounce, a
+    // rebuild that re-reads every file, and then the announcement — which on a machine running the
+    // rest of this suite's browsers alongside is comfortably longer than any fixed sleep somebody
+    // picks. A deadline keeps this a test of whether the announcement happens rather than a race
+    // against how fast it happens; it was the one test in this repository that flaked.
+    const until = Date.now() + 20_000;
+    while (seen.length === 0 && Date.now() < until) {
+      await new Promise((done) => setTimeout(done, 50));
+    }
 
     expect(seen.length).toBeGreaterThan(0);
 

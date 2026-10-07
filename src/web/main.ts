@@ -2014,21 +2014,10 @@ async function applyProposal(): Promise<void> {
   const look = addedBy(sending.mutation);
   closeProposal();
 
-  try {
-    const response = await fetch("/mutate", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ files: sending.files }),
-    });
-    if (!response.ok) {
-      const body = (await response.json()) as { problem?: string };
-      layoutProblems = [body.problem ?? `could not write: ${response.status}`];
-    } else {
-      layoutProblems = [];
-    }
-  } catch (cause) {
-    layoutProblems = [`could not write: ${cause instanceof Error ? cause.message : ""}`];
-  }
+  const problem = await writeFiles(sending.files);
+  layoutProblems = problem === undefined ? [] : [problem];
+  // Only a write that happened can be taken back.
+  if (problem === undefined) rememberEdit({ describe: did, files: sending.files });
 
   // Either way: what is on screen should be what is on disk.
   await load();
@@ -2065,6 +2054,115 @@ function addedBy(mutation: Mutation): SelectionId | undefined {
   return kind === "saga" ? undefined : (`${kind}:${pkg}.${name}` as SelectionId);
 }
 
+
+// ---- taking it back --------------------------------------------------------
+
+/**
+ * One write that can be taken back.
+ *
+ * **Whole files, not inverse edits**, which is a departure from `20-ir.md` 7.1's "a command stack of
+ * inverse mutations" worth stating. The point of that sentence is that undo must not be a dirty editor
+ * buffer, and this is not one: nothing here is unsaved, and every entry is a write that already
+ * happened. What it is instead is the shape the write endpoint already takes — `{ before, after }` per
+ * file — so taking an edit back is that pair swapped, and no offset is recomputed.
+ *
+ * That matters for the part that is actually hard. `invert` computes an inverse from the text the edit
+ * applied to, so an inverse edit is only valid while the file still looks like it did; if anything else
+ * touched the file in between, the offsets land somewhere else and the undo corrupts it. The check that
+ * stops that is the one `writeSources` already makes — it refuses with 409 unless the text on disk
+ * equals `before` — and with that check in place an inverse edit and a swapped snapshot are equally
+ * safe. So the stack holds the thing the server can verify. `invert` remains the answer for a consumer
+ * whose writes *are* edits, such as an LSP; Spider's writes are files.
+ *
+ * **A refusal drops the whole stack.** If the file underneath one entry has moved on, every older entry
+ * for that file has too, so there is nothing below it worth offering. Said out loud rather than quietly,
+ * because an undo button that stops working is worse than one that explains itself once.
+ *
+ * Layout and lens writes are not in here. They go to their own endpoints, they are presentation rather
+ * than model (`docs/design.md` 8.2), and an undo that silently moved a node back would be answering a
+ * question nobody asked.
+ */
+interface Done {
+  readonly describe: string;
+  readonly files: Readonly<Record<string, { readonly before: string; readonly after: string }>>;
+}
+
+/** Deep enough for a session's worth of editing, bounded so a long one cannot grow without limit. */
+const UNDO_DEPTH = 50;
+
+/** Most recent last, in both. */
+let undoable: Done[] = [];
+let redoable: Done[] = [];
+
+const swapped = (
+  files: Done["files"],
+): Record<string, { before: string; after: string }> =>
+  Object.fromEntries(
+    Object.entries(files).map(([path, { before, after }]) => [path, { before: after, after: before }]),
+  );
+
+/** Writes files through `/mutate`, which refuses unless what is on disk is what we last saw. */
+async function writeFiles(
+  files: Readonly<Record<string, { readonly before: string; readonly after: string }>>,
+): Promise<string | undefined> {
+  try {
+    const response = await fetch("/mutate", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files }),
+    });
+    if (response.ok) return undefined;
+    const body = (await response.json()) as { problem?: string };
+    return body.problem ?? `could not write: ${response.status}`;
+  } catch (cause) {
+    return `could not write: ${cause instanceof Error ? cause.message : ""}`;
+  }
+}
+
+function rememberEdit(done: Done): void {
+  undoable.push(done);
+  if (undoable.length > UNDO_DEPTH) undoable.shift();
+  // A new edit ends the branch: what was redoable was an alternative future and this is not it.
+  redoable = [];
+  showHistory();
+}
+
+/** The two buttons, which are not there when there is nothing for them to do. */
+function showHistory(): void {
+  const undo = el<HTMLButtonElement>("undo");
+  const redo = el<HTMLButtonElement>("redo");
+  undo.hidden = undoable.length === 0;
+  redo.hidden = redoable.length === 0;
+  undo.title = `take back: ${undoable[undoable.length - 1]?.describe ?? ""} (ctrl-z)`;
+  redo.title = `do again: ${redoable[redoable.length - 1]?.describe ?? ""} (ctrl-shift-z)`;
+}
+
+async function stepHistory(which: "undo" | "redo"): Promise<void> {
+  const from = which === "undo" ? undoable : redoable;
+  const entry = from[from.length - 1];
+  if (entry === undefined) return;
+
+  // Undo writes the files back as they were; redo writes them forward again.
+  const problem = await writeFiles(which === "undo" ? swapped(entry.files) : entry.files);
+  if (problem !== undefined) {
+    undoable = [];
+    redoable = [];
+    showHistory();
+    layoutProblems = [problem];
+    await load();
+    status.classList.add("bad");
+    status.textContent = `${problem} — so the edit history was dropped`;
+    return;
+  }
+
+  from.pop();
+  (which === "undo" ? redoable : undoable).push(entry);
+  showHistory();
+  layoutProblems = [];
+  await load();
+  status.classList.remove("bad");
+  status.textContent = which === "undo" ? `took back: ${entry.describe}` : `did again: ${entry.describe}`;
+}
 
 // ---- adding ----------------------------------------------------------------
 
@@ -3265,6 +3363,8 @@ document.addEventListener("click", (e) => {
 void loadProviders();
 el("previewClose").addEventListener("click", () => closePreview());
 el("previewAll").addEventListener("click", () => flipAll());
+el("undo").addEventListener("click", () => void stepHistory("undo"));
+el("redo").addEventListener("click", () => void stepHistory("redo"));
 el("addNew").addEventListener("click", () => startAdd());
 el("addStep").addEventListener("click", () => startAddStep());
 el("toggleCode").addEventListener("click", () => toggleCode());
@@ -3349,6 +3449,19 @@ document.addEventListener("keydown", (e) => {
   // `textarea` was missing from this list, which is why typing a message body in the composer played
   // the trace on a space, opened the data view on a `d`, and shut the composer on a `c`.
   if (typingInto(e.target)) return;
+
+  // Ctrl-Z and ctrl-shift-Z, below the typing guard rather than above it like ctrl-K: inside a field
+  // they are the field's own undo, and taking those over would be worse than not offering them.
+  if ((e.key === "z" || e.key === "Z") && (e.ctrlKey || e.metaKey)) {
+    void stepHistory(e.shiftKey ? "redo" : "undo");
+    e.preventDefault();
+    return;
+  }
+  if ((e.key === "y" || e.key === "Y") && (e.ctrlKey || e.metaKey)) {
+    void stepHistory("redo");
+    e.preventDefault();
+    return;
+  }
 
   // `/` as well, because it costs nothing and half the world's tools use it.
   if (e.key === "/") {
