@@ -24,6 +24,9 @@ import {
   addSaga,
   addAdvance,
   addExpect,
+  addField,
+  addMessage,
+  addRecord,
   addPublish,
   addScenario,
   addService,
@@ -39,6 +42,7 @@ import {
   isPossible,
   lineColOf,
   qualify,
+  referenceTo,
   setDeadline,
   setTerminal,
   setUndo,
@@ -1978,6 +1982,264 @@ function useComposed(which: "publish" | "expect"): void {
   startAddScenarioStep(which, { message: qualify(decl.id), payload: composedBody });
 }
 
+/**
+ * Adding a message or a record, from the composer.
+ *
+ * `docs/design.md` had this as "where it would belong", and the reason is 7.1: the form is derived from
+ * the declaration and never configured, so the composer is exactly the place where the model's absences
+ * become visible. You go there to build a payload, find the message does not exist or is missing the
+ * field you need, and until now had to leave and write it by hand.
+ *
+ * Two controls rather than one, because they are two different absences: a declaration that is not
+ * there at all, and a declaration that is there and does not carry what you need.
+ */
+function startComposeNew(): void {
+  const where = editable();
+  if (where === undefined || model === undefined) return;
+
+  const packages = [...model.packages.values()]
+    .filter((pkg) => pkg.declared && pkg.file !== undefined)
+    .map((pkg) => pkg.name)
+    .sort();
+  if (packages.length === 0) {
+    status.classList.add("bad");
+    status.textContent = "no package with a file to add to";
+    return;
+  }
+
+  toggleCompose(false);
+  proposeWhat.textContent = "add a message";
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+
+  const kind = document.createElement("select");
+  kind.title = "what to declare";
+  for (const [value, label] of [
+    ["message", "message"],
+    ["record", "record"],
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    kind.append(option);
+  }
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.placeholder = "Name";
+  name.autocomplete = "off";
+
+  const pkg = document.createElement("select");
+  for (const option of packages) {
+    const node = document.createElement("option");
+    node.value = option;
+    node.textContent = option;
+    pkg.append(node);
+  }
+
+  // `@command`, `@event` and `@query` say opposite things about who is responsible, and a query
+  // carries no deduplication key at all (7k's D100). So it is asked for, with no default — "none" is
+  // a legal message and a visible non-answer, which is better than a guess that reads as a decision.
+  const intent = document.createElement("select");
+  intent.title = "what the message is for";
+  for (const [value, label] of [
+    ["", "— no intent —"],
+    ["command", "@command — instructs"],
+    ["event", "@event — states a fact"],
+    ["query", "@query — asks, changes nothing"],
+  ] as const) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    intent.append(option);
+  }
+
+  form.append(kind, name, pkg, intent);
+
+  const preview = document.createElement("div");
+  const redraw = (): void => {
+    preview.replaceChildren();
+    intent.hidden = kind.value !== "message";
+    const typed = name.value.trim();
+    if (typed === "") {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent = `type a name for the ${kind.value}`;
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+    const mutation =
+      kind.value === "record"
+        ? addRecord(where, { pkg: pkg.value, name: typed })
+        : addMessage(where, {
+            pkg: pkg.value,
+            name: typed,
+            ...(intent.value === ""
+              ? {}
+              : { intent: intent.value as "command" | "event" | "query" }),
+          });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+    name.classList.toggle("bad", mutation.edits.length === 0);
+  };
+
+  name.addEventListener("input", redraw);
+  kind.addEventListener("change", redraw);
+  pkg.addEventListener("change", redraw);
+  intent.addEventListener("change", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  name.focus();
+}
+
+/**
+ * Adding a field to whatever the composer is showing.
+ *
+ * **The type list is what resolves.** A kernel name, or a value, record or enum visible from the
+ * declaration's package — which is what `addField` checks, so the list offers exactly what the
+ * operation accepts. The same rule the scenario pickers follow, and for the same reason.
+ *
+ * **A role already claimed is disabled, not hidden.** `02-contract.md` section 2 makes a role claimed
+ * twice ambiguous, so the second claim is refused; showing the row greyed says which roles this record
+ * already has, which is worth knowing while deciding what to add.
+ */
+function startComposeField(): void {
+  const where = editable();
+  if (where === undefined || model === undefined || composing === undefined) return;
+  const decl = model.decls.find((d) => `${d.id.kind}:${d.id.pkg}.${d.id.name}` === composing!.id);
+  if (
+    decl === undefined ||
+    (decl.kind !== "message" && decl.kind !== "record" && decl.kind !== "envelope")
+  ) {
+    return;
+  }
+
+  const target = decl;
+  toggleCompose(false);
+  proposeWhat.textContent = `add a field to ${target.id.name}`;
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.placeholder = "fieldName";
+  name.autocomplete = "off";
+
+  const type = document.createElement("select");
+  type.title = "the field's type";
+  const KERNEL = [
+    "string",
+    "uuid",
+    "int",
+    "decimal",
+    "bool",
+    "instant",
+    "duration",
+    "date",
+    "float",
+    "bytes",
+  ];
+  const declared = model
+    .inScope(target.id.pkg)
+    .filter((d) => d.kind === "value" || d.kind === "record" || d.kind === "enum")
+    .map((d) => referenceTo(model!, target.id.pkg, d.id).text)
+    .sort();
+  const kernelGroup = document.createElement("optgroup");
+  kernelGroup.label = "kernel";
+  for (const option of KERNEL) {
+    const node = document.createElement("option");
+    node.value = option;
+    node.textContent = option;
+    kernelGroup.append(node);
+  }
+  type.append(kernelGroup);
+  if (declared.length > 0) {
+    const group = document.createElement("optgroup");
+    group.label = "declared";
+    for (const option of [...new Set(declared)]) {
+      const node = document.createElement("option");
+      node.value = option;
+      node.textContent = option;
+      group.append(node);
+    }
+    type.append(group);
+  }
+
+  const list = document.createElement("input");
+  list.type = "checkbox";
+  list.id = "fieldList";
+  const listLabel = document.createElement("label");
+  listLabel.htmlFor = list.id;
+  listLabel.textContent = "many";
+  listLabel.title = "a list of them, written `[T]`";
+
+  const optional = document.createElement("input");
+  optional.type = "checkbox";
+  optional.id = "fieldOptional";
+  const optionalLabel = document.createElement("label");
+  optionalLabel.htmlFor = optional.id;
+  optionalLabel.textContent = "optional";
+
+  const role = document.createElement("select");
+  role.title = "the role this field claims";
+  for (const value of ["", "businessKey", "partitionKey", "correlation", "causation", "subject"]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === "" ? "— no role —" : `@role(${value})`;
+    // Already claimed here, so `addField` would refuse it. Shown rather than dropped: which roles this
+    // record already has is worth reading while deciding what to add.
+    if (value !== "" && target.fields.some((f) => f.role === value)) {
+      option.disabled = true;
+      option.textContent = `@role(${value}) — taken`;
+    }
+    role.append(option);
+  }
+
+  form.append(name, type, list, listLabel, optional, optionalLabel, role);
+
+  const preview = document.createElement("div");
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const typed = name.value.trim();
+    if (typed === "") {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent = "type a name for the field";
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+    const mutation = addField(where, {
+      target: qualify(target.id),
+      name: typed,
+      type: list.checked ? `[${type.value}]` : type.value,
+      ...(optional.checked ? { optional: true } : {}),
+      ...(role.value === "" ? {} : { role: role.value }),
+    });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+    name.classList.toggle("bad", mutation.edits.length === 0);
+  };
+
+  for (const control of [name, type, list, optional, role]) {
+    control.addEventListener(control === name ? "input" : "change", redraw);
+  }
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  name.focus();
+}
+
 // ---- connecting ------------------------------------------------------------
 
 const editable = (): Editable | undefined =>
@@ -3548,6 +3810,8 @@ el("proposeClose").addEventListener("click", closeProposal);
 proposeApply.addEventListener("click", () => void applyProposal());
 el("composeClose").addEventListener("click", () => toggleCompose(false));
 composeWhat.addEventListener("change", startComposing);
+el("composeNew").addEventListener("click", () => startComposeNew());
+el("composeField").addEventListener("click", () => startComposeField());
 el("composePublish").addEventListener("click", () => useComposed("publish"));
 el("composeExpect").addEventListener("click", () => useComposed("expect"));
 el("run").addEventListener("change", () => selectRun());

@@ -861,7 +861,30 @@ field makes a scenario brittle to additive changes, and those are explicitly non
 `no` is refused by Core — it narrows what counts as a match, so `no` beside one asks whether none of a
 particular shape arrived.
 
-### 9.9 Undo is a stack of writes, verified by the server
+### 9.9 A message, a record and a field, from the composer
+
+A `+` in the compose header adds a message or a record; a `field…` beside it adds a field to whatever
+the composer is showing.
+
+Here rather than anywhere else because of 7.1: the form is derived from the declaration and never
+configured, so the composer is exactly where the model's absences become visible. You go there to build
+a payload, find the message does not exist or does not carry what you need, and until now had to leave
+and write it by hand.
+
+**The intent is asked for and has no default.** `@command`, `@event` and `@query` say opposite things
+about who is responsible, and a query carries no deduplication key at all (7k's D100), so unlike
+`addPipe`'s `retention 7d` there is nothing neutral to fall back on. `— no intent —` is a legal message
+and a visible non-answer, which beats a guess that reads as a decision.
+
+**The type list is what resolves**: the kernel names, then the values, records and enums visible from
+the declaration's package, written as `referenceTo` would write them. `addField` checks exactly that, so
+the list offers what the operation accepts — the same rule the scenario pickers follow.
+
+**A role the declaration already claims is greyed, not dropped.** `02-contract.md` section 2 makes a
+role claimed twice ambiguous, so Core refuses the second claim; showing the row disabled says which
+roles this record already has, which is what you want to know while deciding what to add.
+
+### 9.10 Undo is a stack of writes, verified by the server
 
 `undo` and `redo` in the toolbar, ctrl-Z and ctrl-shift-Z, hidden when there is nothing for them to do.
 
@@ -890,13 +913,11 @@ edit is not it.
 rather than model (8.2), so an undo that silently moved a node back would answer a question nobody
 asked.
 
-### 9.10 What is still not here
+### 9.11 What is still not here
 
 **`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
 `views.json` atomically or it silently discards every saved position and lens entry naming the old name,
 and `moveToPackage` is the only mutation that can change a message's wire type.
-
-**Adding a message or a record** from the composer, which is where it would belong.
 
 **A scenario view.** These flows reach a scenario through a picker, not through anything drawn. A scenario
 is a script on a clock and the sequence diagram already draws one of those from a trace, so the shape is

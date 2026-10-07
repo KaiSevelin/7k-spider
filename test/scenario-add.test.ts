@@ -399,3 +399,126 @@ describe("the composer's body in a scenario", () => {
     expect(shown).not.toContain("11111111-2222-3333-4444-555555555555");
   }, 90_000);
 });
+
+/**
+ * Adding a message or a record from the composer.
+ *
+ * `docs/design.md` had this as "where it would belong", and 7.1 is why: the form is derived from the
+ * declaration and never configured, so the composer is exactly where the model's absences show up. You
+ * go there to build a payload and find the message is not there, or is there and does not carry what
+ * you need — and until now had to leave and write it by hand.
+ */
+describe("adding a declaration from the composer", () => {
+  const openCompose = async (p: Page): Promise<void> => {
+    await p.click("#toggleCompose");
+    await p.waitForSelector("#composeForm");
+  };
+
+  it("adds a message with an intent, and nothing when none was chosen", async () => {
+    if (!ready) return;
+    const p = await open();
+    await openCompose(p);
+    await p.click("#composeNew");
+    await p.waitForSelector("#addForm input");
+    await p.locator("#addForm input").fill("Cancelled");
+    await p.waitForTimeout(300);
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain(
+      "message Cancelled v1.0 {",
+    );
+
+    await p.selectOption("#addForm select >> nth=2", "event");
+    await p.waitForTimeout(300);
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain(
+      "message Cancelled v1.0 @event {",
+    );
+
+    await p.click("#proposeApply");
+    await p.waitForTimeout(1500);
+    expect(await readFile(model, "utf-8")).toContain("message Cancelled v1.0 @event {");
+  }, 90_000);
+
+  it("adds a record, where the intent does not apply", async () => {
+    if (!ready) return;
+    const p = await open();
+    await openCompose(p);
+    await p.click("#composeNew");
+    await p.waitForSelector("#addForm input");
+    await p.selectOption("#addForm select >> nth=0", "record");
+    await p.locator("#addForm input").fill("Buyer");
+    await p.waitForTimeout(300);
+    // The intent picker is for a message and is out of the way for a record.
+    expect(await p.locator("#addForm select >> nth=2").isHidden()).toBe(true);
+    await p.click("#proposeApply");
+    await p.waitForTimeout(1500);
+    expect(await readFile(model, "utf-8")).toContain("record Buyer {");
+  }, 90_000);
+
+  it("adds a field, with a role, to what the composer is showing", async () => {
+    if (!ready) return;
+    const p = await open();
+    await openCompose(p);
+    await p.selectOption("#composeWhat", "message:shop.Place");
+    await p.waitForTimeout(300);
+    await p.click("#composeField");
+    await p.waitForSelector("#addForm input");
+    await p.locator("#addForm input").first().fill("note");
+    await p.waitForTimeout(300);
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain("note: string");
+
+    await p.check("#fieldOptional");
+    await p.waitForTimeout(300);
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain("note: string?");
+
+    await p.click("#proposeApply");
+    await p.waitForTimeout(1500);
+    expect(await readFile(model, "utf-8")).toContain("  note: string?");
+  }, 90_000);
+
+  it("greys a role the declaration already claims", async () => {
+    if (!ready) return;
+    const p = await open();
+    await openCompose(p);
+    await p.selectOption("#composeWhat", "message:shop.Place");
+    await p.waitForTimeout(300);
+    await p.click("#composeField");
+    await p.waitForSelector("#addForm input");
+
+    // `orderId` already claims it, and a role claimed twice leaves the model ambiguous.
+    const roles = await p.locator("#addForm select").last().locator("option").evaluateAll((os) =>
+      os.map((o) => ({
+        value: (o as HTMLOptionElement).value,
+        disabled: (o as HTMLOptionElement).disabled,
+      })),
+    );
+    expect(roles.find((r) => r.value === "businessKey")?.disabled).toBe(true);
+    expect(roles.find((r) => r.value === "subject")?.disabled).toBe(false);
+  }, 90_000);
+
+  it("refuses a field name the declaration already has", async () => {
+    if (!ready) return;
+    const p = await open();
+    await openCompose(p);
+    await p.selectOption("#composeWhat", "message:shop.Place");
+    await p.waitForTimeout(300);
+    await p.click("#composeField");
+    await p.waitForSelector("#addForm input");
+    await p.locator("#addForm input").first().fill("ORDERID");
+    await p.waitForTimeout(300);
+    expect(await p.locator("#proposeBody .why").textContent()).toContain("already has a field");
+    expect(await p.locator("#proposeApply").isHidden()).toBe(true);
+  }, 90_000);
+
+  it("offers a list of a declared type", async () => {
+    if (!ready) return;
+    const p = await open();
+    await openCompose(p);
+    await p.selectOption("#composeWhat", "message:shop.Place");
+    await p.waitForTimeout(300);
+    await p.click("#composeField");
+    await p.waitForSelector("#addForm input");
+    await p.locator("#addForm input").first().fill("tags");
+    await p.check("#fieldList");
+    await p.waitForTimeout(300);
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain("tags: [string]");
+  }, 90_000);
+});
