@@ -18,6 +18,7 @@ import {
   sayDuration,
   sendableFrom,
   type SagaDiagram,
+  type StepCard,
 } from "../src/saga.js";
 import { sayGap } from "../src/sequence.js";
 
@@ -165,6 +166,17 @@ const diagram = (source = MODEL): SagaDiagram => {
 /** The step card of a given name, wherever it sits. */
 const card = (d: SagaDiagram, name: string) =>
   d.stages.flatMap((s) => s.steps).find((c) => c.name === name);
+
+/**
+ * `card`, where a missing one is the test's own mistake rather than a case to skip.
+ *
+ * Thrown, because reading zero rows off a card that is not there would pass.
+ */
+const cardOf = (d: SagaDiagram, name: string): StepCard => {
+  const found = card(d, name);
+  if (found === undefined) throw new Error(`no step card named \`${name}\``);
+  return found;
+};
 
 const labels = (d: SagaDiagram, name: string): string[] =>
   (card(d, name)?.outcomes ?? []).map((o) => o.label);
@@ -530,7 +542,7 @@ describe("a saga the checker would complain about", () => {
 describe("every row has a line to itself", () => {
   /** Every baseline the view will draw text on, in one card, in the order it draws them. */
   const rowsIn = (d: SagaDiagram, name: string): { y: number; what: string }[] => {
-    const c = card(d, name);
+    const c = cardOf(d, name);
     const rows: { y: number; what: string }[] = [];
     if (c.sendY !== undefined) rows.push({ y: c.sendY, what: `send ${c.send?.label ?? ""}` });
     for (const o of c.outcomes) rows.push({ y: o.y, what: o.label });
@@ -546,7 +558,7 @@ describe("every row has a line to itself", () => {
   it("gives the send and the first outcome different baselines", () => {
     const d = diagram();
     for (const name of names(d)) {
-      const c = card(d, name);
+      const c = cardOf(d, name);
       if (c.sendY === undefined || c.outcomes.length === 0) continue;
       expect(c.sendY, `${name}: send and first outcome collide`).not.toBe(c.outcomes[0]!.y);
       expect(c.outcomes[0]!.y).toBeGreaterThan(c.sendY);
@@ -575,7 +587,7 @@ describe("every row has a line to itself", () => {
   it("starts the first row clear of the card's own name", () => {
     const d = diagram();
     for (const name of names(d)) {
-      const c = card(d, name);
+      const c = cardOf(d, name);
       const first = rowsIn(d, name)[0];
       if (first === undefined) continue;
       // The view draws the name at `card.y + 17`.
@@ -586,7 +598,7 @@ describe("every row has a line to itself", () => {
   it("keeps every row inside the card that holds it", () => {
     const d = diagram();
     for (const name of names(d)) {
-      const c = card(d, name);
+      const c = cardOf(d, name);
       for (const row of rowsIn(d, name)) {
         expect(row.y, `${name}: \`${row.what}\` above the card`).toBeGreaterThan(c.y);
         expect(row.y, `${name}: \`${row.what}\` below the card`).toBeLessThan(c.y + c.height);

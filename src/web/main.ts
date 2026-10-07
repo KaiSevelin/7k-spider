@@ -22,9 +22,15 @@ import {
   buildWorkspace,
   addPipe,
   addSaga,
+  addAdvance,
+  addExpect,
+  addPublish,
+  addScenario,
   addService,
   addStep,
+  carriersOf,
   connectEmit,
+  emittersOf,
   connectReact,
   hasErrors,
   isPossible,
@@ -39,6 +45,7 @@ import {
   type LinkedModel,
   type Mutation,
   type SagaIr,
+  type ScenarioFile,
 } from "@sevenk/core";
 import { edgeForEvent, isBadEvent, buildGraph, type Graph, type GraphOptions } from "../graph.js";
 import {
@@ -157,6 +164,7 @@ let lastDiagnostics: readonly Diagnostic[] = [];
 /** The sources as read, and the trees they parsed to: what a mutation is computed against. */
 let sources: Readonly<Record<string, string>> = {};
 let trees: ReadonlyMap<string, CstNode> = new Map();
+let scenarioFiles: readonly ScenarioFile[] = [];
 /** Where a connection is being made from, while one is. */
 let connectingFrom: SelectionId | undefined;
 let proposal: Preview | undefined;
@@ -1949,6 +1957,12 @@ async function applyProposal(): Promise<void> {
  */
 function startAdd(): void {
   const kind = el<HTMLSelectElement>("addWhat").value;
+  // A scenario is not a declaration in a package, so it takes its own flow from the same control.
+  if (kind === "scenario" || kind === "soak") return startAddScenario(kind);
+  if (kind === "publish" || kind === "expect" || kind === "advance") {
+    return startAddScenarioStep(kind);
+  }
+
   const where = editable();
   if (where === undefined || model === undefined) {
     status.classList.add("bad");
@@ -2341,6 +2355,361 @@ function startSetDeadline(): void {
   after.focus();
 }
 
+// ---- scenarios -------------------------------------------------------------
+
+/**
+ * Adding to a scenario file, from the same `+` as everything else.
+ *
+ * A scenario is a sibling specification and not part of the language (`30-scenarios.md`), and it is
+ * edited from here anyway, because for somebody reading a model the line between "the system" and "what
+ * I claim about the system" is not where the toolbar should be. Until now it was: a saga's missing
+ * `undo` was one click away and a scenario was unreachable.
+ *
+ * **The lists offer only what the operation accepts.** A publish's sender comes from the model's
+ * `emits` and an expectation's pipe from the traffic table, so `emittersOf` and `carriersOf` populate
+ * the pickers — the same functions `addPublish` and `addExpect` derive from. Working that out here
+ * instead would be a second answer to the question the operation already answers, and the first time
+ * they disagreed the form would offer a line the operation refuses.
+ *
+ * **The clock is not asked for.** `addPublish` reads where the scenario's clock stands from the steps
+ * already written, which is the one thing about a scenario step that is derivable and easy to get
+ * wrong: `at` is absolute, and a runtime treats a point in the past as *now*, so a wrong one runs late
+ * and nothing says so.
+ */
+
+/** Every scenario on screen, with the file it lives in. The picker's rows. */
+interface ScenarioRow {
+  readonly file: string;
+  readonly name: string;
+  readonly pkg: string;
+}
+
+const scenarioRows = (): ScenarioRow[] =>
+  scenarioFiles.flatMap((f) =>
+    f.scenarios.map((s) => ({ file: f.file, name: s.name, pkg: f.package })),
+  );
+
+const shortFile = (path: string): string =>
+  path.replace(/\\/g, "/").split("/").pop() ?? path;
+
+/** A row's label: the bare name, qualified by file only where two files share it. */
+function labelFor(row: ScenarioRow, rows: readonly ScenarioRow[]): string {
+  const sameName = rows.filter((r) => r.name.toLowerCase() === row.name.toLowerCase());
+  return sameName.length > 1 ? `${row.name} (${shortFile(row.file)})` : row.name;
+}
+
+/** Why the chosen kind cannot be added, or nothing. */
+function cannotAdd(kind: string): string | undefined {
+  if (kind === "scenario" || kind === "soak") {
+    return scenarioFiles.length === 0
+      ? "no scenario file here — one starts `scenarios for <package>`"
+      : undefined;
+  }
+  if (kind === "publish" || kind === "expect" || kind === "advance") {
+    return scenarioRows().length === 0 ? "no scenario to add a step to" : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The `+` dropdown, with what cannot be written greyed and saying why.
+ *
+ * The same rule the generate menu follows: a row that would do nothing is not a row worth clicking to
+ * find out. A scenario step has nowhere to go without a scenario, and that is a fact about the tree
+ * rather than about the selection, so it is settled when the tree loads.
+ */
+function fillAddKinds(): void {
+  for (const option of el<HTMLSelectElement>("addWhat").options) {
+    const why = cannotAdd(option.value);
+    option.disabled = why !== undefined;
+    option.title = why ?? "";
+  }
+  const picker = el<HTMLSelectElement>("addWhat");
+  // A disabled option stays selected in most browsers, so the `+` would open a panel that refuses.
+  if (picker.selectedOptions[0]?.disabled === true) {
+    const first = [...picker.options].find((o) => !o.disabled);
+    if (first !== undefined) picker.value = first.value;
+  }
+}
+
+/** `scenario X { seed 1 }`, in a scenario file. */
+function startAddScenario(kind: "scenario" | "soak"): void {
+  const where = editable();
+  if (where === undefined) return;
+  if (scenarioFiles.length === 0) {
+    status.classList.add("bad");
+    status.textContent = "no scenario file to add to";
+    return;
+  }
+
+  proposeWhat.textContent = `add a ${kind}`;
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.placeholder = "Name";
+  name.autocomplete = "off";
+
+  const file = document.createElement("select");
+  file.title = "the scenario file to add to";
+  for (const f of scenarioFiles) {
+    const option = document.createElement("option");
+    option.value = f.file;
+    option.textContent = `${shortFile(f.file)} → ${f.package}`;
+    file.append(option);
+  }
+
+  // The mocksets of the chosen file, because `use` resolves in its own file and nowhere else.
+  const mockset = document.createElement("select");
+  mockset.title = "a mockset to inherit";
+  const fillMocksets = (): void => {
+    const chosen = scenarioFiles.find((f) => f.file === file.value);
+    mockset.replaceChildren();
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "— no mockset —";
+    mockset.append(none);
+    for (const m of chosen?.mocksets ?? []) {
+      const option = document.createElement("option");
+      option.value = m.name;
+      option.textContent = m.name;
+      mockset.append(option);
+    }
+    mockset.disabled = (chosen?.mocksets.length ?? 0) === 0;
+  };
+  fillMocksets();
+
+  form.append(name, file, mockset);
+
+  const preview = document.createElement("div");
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const typed = name.value.trim();
+    name.classList.remove("bad");
+    if (typed === "") {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent = `type a name for the ${kind}`;
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+    const mutation = addScenario(where, {
+      file: file.value,
+      name: typed,
+      kind,
+      ...(mockset.value === "" ? {} : { uses: [mockset.value] }),
+    });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+    name.classList.toggle("bad", mutation.edits.length === 0);
+  };
+
+  name.addEventListener("input", redraw);
+  file.addEventListener("change", () => {
+    fillMocksets();
+    redraw();
+  });
+  mockset.addEventListener("change", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  name.focus();
+}
+
+/**
+ * A step in a scenario: `publish`, `expect` or `advance`.
+ *
+ * One flow for the three, because they differ only in their second control — and in what populates it,
+ * which is the part that matters. A publish offers the messages something emits and then that message's
+ * senders; an expectation offers the messages something carries and then that message's pipes; an
+ * advance offers nothing, since how long to wait is the question being asked.
+ */
+function startAddScenarioStep(kind: "publish" | "expect" | "advance"): void {
+  const where = editable();
+  if (where === undefined || model === undefined) return;
+
+  const rows = scenarioRows();
+  if (rows.length === 0) {
+    status.classList.add("bad");
+    status.textContent = "no scenario to add a step to";
+    return;
+  }
+
+  proposeWhat.textContent = `add a ${kind}`;
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+
+  const which = document.createElement("select");
+  which.title = "the scenario to add to";
+  rows.forEach((row, at) => {
+    const option = document.createElement("option");
+    option.value = String(at);
+    option.textContent = labelFor(row, rows);
+    which.append(option);
+  });
+  form.append(which);
+
+  const chosen = (): ScenarioRow => rows[Number(which.value)] ?? rows[0]!;
+
+  // ---- publish and expect: a message, and then the thing that routes it ----
+
+  const message = document.createElement("select");
+  const second = document.createElement("select");
+  const negate = document.createElement("input");
+  negate.type = "checkbox";
+  negate.id = "expectNone";
+  const negateLabel = document.createElement("label");
+  negateLabel.htmlFor = negate.id;
+  negateLabel.textContent = "none of them";
+  negateLabel.title = "assert the message never arrives — a guard against an implementation that sends it anyway";
+
+  const by = document.createElement("input");
+  by.type = "text";
+  by.placeholder = "how long, e.g. 30s";
+  by.autocomplete = "off";
+
+  /** The messages worth offering, which is the ones the operation would accept. */
+  const offerable = (): string[] => {
+    const m = model!;
+    const names = m.decls
+      .filter((d) => d.kind === "message")
+      .filter((d) => {
+        // Negated, any message on any pipe is a legitimate assertion (D109), so nothing is filtered.
+        if (kind === "expect") return negate.checked || carriersOf(m, d.id).length > 0;
+        return emittersOf(m, d.id).length > 0;
+      })
+      .map((d) => qualify(d.id))
+      .sort();
+    return names;
+  };
+
+  const fillMessages = (): void => {
+    const keep = message.value;
+    message.replaceChildren();
+    for (const name of offerable()) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      message.append(option);
+    }
+    if (offerable().includes(keep)) message.value = keep;
+  };
+
+  /** The senders of the chosen message, or the pipes it travels on. */
+  const fillSecond = (): void => {
+    const m = model!;
+    const decl = m.decls.find((d) => d.kind === "message" && qualify(d.id) === message.value);
+    second.replaceChildren();
+    if (decl === undefined) return;
+    const names =
+      kind === "publish"
+        ? emittersOf(m, decl.id).map((s) => qualify(s.id))
+        : negate.checked
+          ? m.decls.filter((d) => d.kind === "pipe").map((d) => qualify(d.id))
+          : carriersOf(m, decl.id).map((p) => qualify(p));
+    for (const name of [...names].sort()) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      second.append(option);
+    }
+    second.title = kind === "publish" ? "who sent it" : "the pipe it arrives on";
+    // One answer is not a choice, but it is still worth seeing which one was taken.
+    second.disabled = names.length < 2;
+  };
+
+  if (kind === "advance") {
+    form.append(by);
+  } else {
+    form.append(message, second);
+    if (kind === "expect") form.append(negate, negateLabel);
+    fillMessages();
+    fillSecond();
+  }
+
+  const preview = document.createElement("div");
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const row = chosen();
+
+    if (kind === "advance") {
+      const typed = by.value.trim();
+      if (typed === "") {
+        const why = document.createElement("div");
+        why.className = "why";
+        why.textContent = "how far to move the clock";
+        preview.append(why);
+        proposeState.textContent = "";
+        proposeApply.hidden = true;
+        proposal = undefined;
+        return;
+      }
+      const mutation = addAdvance(where, { scenario: row.name, file: row.file, by: typed });
+      proposeWhat.textContent = mutation.describe;
+      showMutation(mutation, preview);
+      by.classList.toggle("bad", mutation.edits.length === 0);
+      return;
+    }
+
+    if (message.value === "") {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent =
+        kind === "publish"
+          ? "nothing in this model declares `emits`, so there is no message with a pipe to publish it on"
+          : "nothing in this model travels on a pipe yet";
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+
+    const mutation =
+      kind === "publish"
+        ? addPublish(where, {
+            scenario: row.name,
+            file: row.file,
+            message: message.value,
+            ...(second.value === "" ? {} : { as: second.value }),
+          })
+        : addExpect(where, {
+            scenario: row.name,
+            file: row.file,
+            message: message.value,
+            ...(second.value === "" ? {} : { pipe: second.value }),
+            ...(negate.checked ? { negated: true } : {}),
+          });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+  };
+
+  which.addEventListener("change", redraw);
+  by.addEventListener("input", redraw);
+  message.addEventListener("change", () => {
+    fillSecond();
+    redraw();
+  });
+  second.addEventListener("change", redraw);
+  negate.addEventListener("change", () => {
+    fillMessages();
+    fillSecond();
+    redraw();
+  });
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  if (kind === "advance") by.focus();
+}
+
 // ---- search ----------------------------------------------------------------
 
 const KIND_LABEL: Readonly<Record<string, string>> = {
@@ -2603,9 +2972,13 @@ function draw(read: Sources): void {
   // its insertion points in.
   const ws = buildWorkspace(read.files.map((f) => ({ path: f.path, source: f.source })));
   trees = ws.trees;
+  // The scenario files, for the `+` pickers. Not model IR — they reference a package (D62) — and
+  // kept here because a form offering a scenario needs the names and the mocksets of each one.
+  scenarioFiles = ws.scenarios;
   model = ws.model;
   index = buildIndex(ws.model);
   fillSagas();
+  fillAddKinds();
   whole = buildGraph(ws.model, optionsFromForm());
   // The focus is an id too, so it survives this rebuild — and `applyFocus` shows everything rather
   // than nothing if the thing it names has gone.

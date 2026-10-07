@@ -597,6 +597,15 @@
         border-radius: 4px;
       }
       #addForm input.bad { border-color: var(--bad); }
+      /* The one checkbox in here is a modifier beside a picker, not a field of its own, so it keeps
+         its own width and the picker keeps the stretch. */
+      #addForm input[type="checkbox"] {
+        flex: 0 0 auto;
+        padding: 0;
+        border: 0;
+        accent-color: var(--accent);
+      }
+      #addForm label { white-space: nowrap; cursor: pointer; opacity: 0.85; }
 
       #menu {
         position: absolute;
@@ -1091,11 +1100,20 @@
       <span class="addNew">
         <button type="button" id="addNew" title="add one of these to the model">+</button>
         <select id="addWhat" title="what to add">
-          <option value="service">service</option>
-          <option value="queue">queue</option>
-          <option value="topic">topic</option>
-          <option value="stream">stream</option>
-          <option value="saga">saga</option>
+          <optgroup label="to the model">
+            <option value="service">service</option>
+            <option value="queue">queue</option>
+            <option value="topic">topic</option>
+            <option value="stream">stream</option>
+            <option value="saga">saga</option>
+          </optgroup>
+          <optgroup label="to a scenario">
+            <option value="scenario">scenario</option>
+            <option value="soak">soak</option>
+            <option value="publish">publish</option>
+            <option value="expect">expect</option>
+            <option value="advance">advance</option>
+          </optgroup>
         </select>
       </span>
       <button type="button" id="toggleCode" title="the model as text (t)">code</button>

@@ -766,7 +766,36 @@ connectReact: reacts acme.retail.ticketing.TicketIssued from … on … Reportin
 The aliased reference, the file's indentation, a model that still checks out, and property 3 of section
 7.2 on real files.
 
-### 9.6 What is still not here
+### 9.6 Scenarios are edited from the same control
+
+A scenario file is a sibling specification and not part of the language (`30-scenarios.md`), and the `+`
+dropdown adds to one anyway, in a group of its own: `scenario`, `soak`, `publish`, `expect`, `advance`.
+The line between "the system" and "what I claim about the system" is a real one and it is not where a
+toolbar should be — before this, a saga's missing `undo` was one click away and a scenario was
+unreachable.
+
+**The pickers offer what the operation accepts, because they ask it.** `emittersOf` and `carriersOf` are
+exported from Core's mutation module and are the same functions `addPublish` and `addExpect` derive from,
+so the senders in the list are the services that emit the message and the pipes are the ones that carry
+it. Working either out here would be a second answer to a question Core already answers, and the first
+time the two disagreed the list would offer a line the operation refuses. Where the model leaves one
+answer the picker is disabled rather than hidden: one answer is not a choice, but which one was taken is
+still worth seeing.
+
+**Negating an expectation opens the pipe list to every pipe.** `expect no M on p` where the model forbids
+`M` on `p` is not vacuous — scenarios run against real implementations, and one that published it anyway
+is what the assertion catches (7k's D109). So the filter that keeps the positive form honest is exactly
+the filter the negative form must not have.
+
+**The clock is not asked for.** `addPublish` reads where the scenario's clock stands from the steps
+already written. It is the one thing about a scenario step that is derivable and easy to get wrong: `at`
+is absolute, a runtime treats a point in the past as *now*, so a wrong one runs late and nothing says so.
+
+**A kind with nowhere to go is greyed, with the reason in its title**, which is the rule the generate menu
+already follows. No scenario file means no scenario to write into, and that is a fact about the tree
+rather than about the selection, so it is settled when the tree loads.
+
+### 9.7 What is still not here
 
 **`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
 `views.json` atomically or it silently discards every saved position and lens entry naming the old name,
@@ -776,6 +805,16 @@ and `moveToPackage` is the only mutation that can change a message's wire type.
 list and two buttons rather than a design problem — it is simply not written.
 
 **Adding a message or a record** from the composer, which is where it would belong.
+
+**A publish's body**, and with it `expect ... { fields }`. `addPublish` writes the clause and says when a
+message still wants a body; the composer already produces canonical JSON and the two are not joined up.
+That join is the one piece worth doing next, because until it exists every publish written from here is
+one a run refuses.
+
+**A scenario view.** These flows reach a scenario through a picker, not through anything drawn. A scenario
+is a script on a clock and the sequence diagram already draws one of those from a trace, so the shape is
+probably that view with the declaration behind it — the same relation section 13.4 has between a saga's
+declaration and a run over it.
 
 ## 10. Increments
 

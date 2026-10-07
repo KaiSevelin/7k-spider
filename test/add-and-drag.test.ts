@@ -134,13 +134,11 @@ describe.skipIf(false)("adding a declaration", () => {
   it("offers a service, all three pipe kinds, and a saga", async () => {
     if (!ready) return;
     const p = await fresh();
-    expect(await p.locator("#addWhat option").allTextContents()).toEqual([
-      "service",
-      "queue",
-      "topic",
-      "stream",
-      "saga",
-    ]);
+    // The group, not the whole list: the scenario kinds sit in a group of their own and are
+    // `scenario-add.test.ts`'s business.
+    expect(
+      await p.locator('#addWhat optgroup[label="to the model"] option').allTextContents(),
+    ).toEqual(["service", "queue", "topic", "stream", "saga"]);
   }, 60_000);
 
   /**
