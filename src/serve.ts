@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { parseManifest } from "@sevenk/generate";
 import {
   MANIFEST,
+  describeEntries,
   describeProviders,
   planFor,
   providersFor,
@@ -162,12 +163,13 @@ async function writeSources(
   }
 
   const allowed = new Set(await collect(paths));
-  // The two sidecars, so a `rename` reaches them in the same request as the model files it is
-  // renaming in. 7k's D98 is the whole reason: "a rename that missed them would silently discard every
+  // The sidecars, so a `rename` reaches them in the same request as the model files it is
+  // renaming in — and `build.json`, so changing a generator option is an edit like any other:
+  // previewed, compare-and-swapped, and on the undo stack. 7k's D98 is the whole reason: "a rename that missed them would silently discard every
   // saved position and every lens entry that named the old one", and two requests would mean a window
   // in which exactly half of that had happened. `layout.json` has its own endpoint for a drag, which
   // writes it whole; this is for the case where it is one file among several in one edit.
-  for (const name of ["layout.json", "views.json"]) {
+  for (const name of ["layout.json", "views.json", MANIFEST]) {
     const side = await sidecarPath(paths, name);
     if (side !== undefined) allowed.add(side);
   }
@@ -732,11 +734,21 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     }
 
     if (url.pathname === "/providers") {
-      const text = await readFile(joinPath(rootOf(paths), ".7k", MANIFEST), "utf-8").catch(() => undefined);
+      const path = joinPath(rootOf(paths), ".7k", MANIFEST);
+      const text = await readFile(path, "utf-8").catch(() => undefined);
       const manifest = text === undefined ? undefined : parseManifest(text, MANIFEST).manifest;
       const { providers, problems } = await providersFor(manifest, rootOf(paths));
       res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
-      res.end(JSON.stringify({ providers: describeProviders(providers), problems }));
+      res.end(
+        JSON.stringify({
+          providers: describeProviders(providers),
+          problems,
+          // The manifest itself, so the page can show what each entry sets and compute an edit
+          // against the exact bytes it read — which is what `/mutate` checks on the way back in.
+          entries: describeEntries(manifest),
+          ...(text === undefined ? {} : { manifest: { path, source: text } }),
+        }),
+      );
       return;
     }
 
@@ -750,12 +762,15 @@ export async function serve(options: ServeOptions): Promise<Serving> {
 
     if (url.pathname === "/sources.json") {
       // The sidecars come along, as their own files rather than merged, because `rename` edits them in
-      // the same request as the model (7k's D98) and an edit needs the text it is computed against. The
+      // the same request as the model (7k's D98) and an edit needs the text it is computed against.
+      // `build.json` is here for the same reason and one more: it is the only source of the bytes an
+      // option edit is computed against, so the page cannot be holding one copy while `/mutate` checks
+      // another. The
       // merged read at `/layout.json` is what the page *uses*; this is what it edits. With one served
       // root — the normal case — they are the same bytes. With several, `sidecarPath` names the first
       // root's, so a rename reaches that one.
       const sidecars = [];
-      for (const name of ["layout.json", "views.json"]) {
+      for (const name of ["layout.json", "views.json", MANIFEST]) {
         const path = await sidecarPath(paths, name);
         if (path === undefined) continue;
         const source = await readFile(path, "utf-8").catch(() => undefined);

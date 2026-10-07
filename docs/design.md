@@ -908,7 +908,41 @@ extension can; this is the half that works everywhere, and it is the half that w
 Fetched lazily, on the first time anything that could have one is selected — it costs a whole plan — and
 dropped on reload, because a model that changed may have moved the handlers.
 
-### 9.11 Undo is a stack of writes, verified by the server
+### 9.11 Generator options are edited, not just read
+
+An `options…` drawer, one entry at a time, with a control per option a provider declares.
+
+**The provider contract had been carrying this all along.** Every provider declares what it lets you
+adjust as an `OptionSpec` — a type, a default, permitted values, and a line of prose. Spider received
+that list on `/providers` and ignored it, typed `unknown[]`. So the one thing a reader most often wants
+to change about generated code was the one thing the editor could not touch: the answer was "edit
+`.7k/build.json` by hand, and reload the page, because `loadProviders` only ran at startup".
+
+**The controls are derived, never configured.** A boolean is a checkbox, an enum is a picker with
+exactly the values it declares, a number is a number, and `describe` is the tooltip. Same principle as
+the composer's form (7.1) and the same payoff: a provider that gains an option gains a control, and one
+that renames an option does not leave a stale row behind. A hand-written panel would be a second list
+of options, wrong the day a provider changed.
+
+**It edits the manifest, because that is where the answer lives.** An option is a decision about the
+output and belongs in the file that records it, not in page state that evaporates — so it is an ordinary
+edit: previewed before writing, compare-and-swapped by the server, and on the undo stack with
+everything else. `/mutate` accepts `build.json` alongside the two sidecars for that reason.
+
+**A value equal to the default is removed rather than written**, so the manifest stays a record of the
+decisions somebody actually made rather than a dump of every default in force. And each row says
+whether it is `set` or `default`, because a row showing `record` tells you nothing about whether anybody
+chose it.
+
+**Written whole, not spliced**, which is what `/layout.json` already does to a JSON sidecar: parsed,
+changed, re-serialised. Every key it is not about — the `_comment`, the other entries, `out` — survives
+because it was never rebuilt, only passed through.
+
+What it does not edit is a per-declaration `rule`. An entry-scoped option is a decision about the whole
+output; a rule varies a declaration-scoped one per declaration, and a row says how many rules may
+override it rather than pretending the value it shows is final.
+
+### 9.12 Undo is a stack of writes, verified by the server
 
 `undo` and `redo` in the toolbar, ctrl-Z and ctrl-shift-Z, hidden when there is nothing for them to do.
 
@@ -937,7 +971,7 @@ edit is not it.
 rather than model (8.2), so an undo that silently moved a node back would answer a question nobody
 asked.
 
-### 9.12 What is still not here
+### 9.13 What is still not here
 
 **`rename` and `moveToPackage`**, for the reasons 7k's D98 records: a rename must touch `layout.json` and
 `views.json` atomically or it silently discards every saved position and lens entry naming the old name,

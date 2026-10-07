@@ -627,6 +627,34 @@
         font-size: 0.85em;
       }
 
+      /* A drawer like the others, and scrollable: a provider with a dozen options must not run off
+         the bottom with no way to reach the last one. */
+      #options {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(520px, 56vw);
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-left: 1px solid var(--line);
+        z-index: 4;
+      }
+      #options[hidden] { display: none; }
+      #optionsBody { flex: 1; overflow: auto; padding: 8px 12px 20px; }
+      #optionsBody dl { margin: 0 0 12px; }
+
+      /* An option row: its name, the control its spec implies, and whether anybody chose it. */
+      #options .row.option { display: flex; gap: 8px; align-items: center; }
+      #options .row.option label { flex: 1; min-width: 0; }
+      #options .row.option input[type="text"],
+      #options .row.option input[type="number"],
+      #options .row.option select { flex: 0 0 11em; min-width: 0; }
+      #options .row.option i { flex: 0 0 auto; font-size: 0.82em; font-style: normal; }
+      #options .row.option i.default { color: var(--ink-dim); }
+      #options .row.option i.set { color: var(--accent); }
+
       #menu {
         position: absolute;
         z-index: 7;
@@ -1142,6 +1170,7 @@
       <button type="button" id="toggleGenerated" title="the generated code (v)" hidden>generated</button>
       <button type="button" id="toggleCompose" title="build a message (c)">compose</button>
       <button type="button" id="connect" title="connect two things (n)">connect&hellip;</button>
+      <button type="button" id="toggleOptions" title="generator options (j)">options&hellip;</button>
       <button type="button" id="toggleLegend" title="what the shapes mean (?)">legend</button>
       <button type="button" id="toggleData" title="the data layer (d)">data</button>
       <button type="button" id="toggleAbout" title="what this model is (a)" hidden>about</button>
@@ -1199,6 +1228,14 @@
         </header>
         <div id="aboutWhere"></div>
         <div id="aboutBody"></div>
+      </aside>
+      <aside id="options" hidden>
+        <header class="panelHead">
+          <b>what the generator does</b>
+          <select id="optionsWhich" title="which manifest entry"></select>
+          <button type="button" id="optionsClose" title="close">&times;</button>
+        </header>
+        <div id="optionsBody"></div>
       </aside>
       <aside id="legend" hidden>
         <header class="panelHead">

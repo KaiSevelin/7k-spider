@@ -56,6 +56,8 @@ import {
   type ScenarioFile,
 } from "@sevenk/core";
 import { edgeForEvent, isBadEvent, buildGraph, type Graph, type GraphOptions } from "../graph.js";
+import type { EntryInfo } from "../generate.js";
+import type { OptionSpec } from "@sevenk/generate";
 import type { PlannedSymbol } from "@sevenk/generate";
 import {
   applyFocus,
@@ -429,6 +431,247 @@ function describe(id: SelectionId | undefined): void {
 
   sidebar.replaceChildren(heading, list, ...parts);
   sidebar.classList.add("open");
+}
+
+// ---- generator options -----------------------------------------------------
+
+/**
+ * Changing what a provider does, from the page.
+ *
+ * Before this the answer was "edit `.7k/build.json` by hand and reload" — and the provider contract had
+ * been carrying the answer all along: every provider declares what it lets you adjust, as an
+ * `OptionSpec` with a type, a default and a one-line description. Spider received that list and ignored
+ * it, typed `unknown[]`. So the one thing a reader most wants to change about generated code was the
+ * one thing the editor could not touch.
+ *
+ * **The controls are derived, never configured.** A boolean is a checkbox, an enum is a picker, a
+ * number is a number — and `describe` is the tooltip. Same principle as the composer's form (7.1), and
+ * the same payoff: a provider that gains an option gains a control, and a provider that renames one
+ * does not leave a stale row behind.
+ *
+ * **It edits the manifest, because that is where the answer lives.** An option is a decision about the
+ * output and belongs in the file that records it, not in page state that evaporates — so this is an
+ * ordinary edit: previewed before it is written, compare-and-swapped by the server, and on the undo
+ * stack with everything else. A value equal to the provider's default is *removed* rather than written,
+ * so the manifest stays a record of the decisions somebody actually made.
+ *
+ * **Written whole, not spliced.** `/layout.json` already does this — "written whole, because the page
+ * holds the whole file: it read it, changed some positions and kept everything else". A manifest is the
+ * same kind of file, and every key this does not touch, `_comment` included, survives the round trip
+ * because it is parsed and re-serialised rather than rebuilt.
+ */
+let entries: readonly EntryInfo[] = [];
+/**
+ * Where the manifest is. Its *text* comes from `sources`, not from here.
+ *
+ * One copy of the bytes, which is the point: an edit is computed against what `/mutate` compares on the
+ * way in, and a second copy fetched by another route would be a second answer to "what does the file
+ * say" — stale the moment anything wrote it.
+ */
+let manifestPath: string | undefined;
+
+/** Which entry the panel is showing, by index. */
+let optionsAt = 0;
+
+const optionsPanel = (): HTMLElement => el("options");
+
+function toggleOptions(force?: boolean): void {
+  const open = force ?? optionsPanel().hidden;
+  optionsPanel().hidden = !open;
+  if (open) showOptions();
+}
+
+/**
+ * The effective value of one option on one entry: what it sets, else the provider's default.
+ */
+const valueOf = (entry: EntryInfo | undefined, spec: OptionSpec): unknown =>
+  entry !== undefined && spec.name in entry.options ? entry.options[spec.name] : spec.default;
+
+/** Whether the manifest records a decision about it, as against falling back to the default. */
+const isSet = (entry: EntryInfo | undefined, spec: OptionSpec): boolean =>
+  entry !== undefined && spec.name in entry.options;
+
+/**
+ * The manifest with one option set, or removed where it matches the default.
+ *
+ * Returned as a `Mutation` so it goes down the same path as every other edit. One whole-file edit
+ * rather than a splice, which is what `/layout.json` already does to a JSON sidecar — and what keeps
+ * every key this is not about, including the `_comment`, exactly as it was.
+ */
+function setOption(at: number, spec: OptionSpec, value: unknown): Mutation | undefined {
+  const source = manifestPath === undefined ? undefined : sources[manifestPath];
+  if (manifestPath === undefined || source === undefined) return undefined;
+
+  let parsed: { emit?: Record<string, unknown>[] } & Record<string, unknown>;
+  try {
+    parsed = JSON.parse(source) as typeof parsed;
+  } catch {
+    return undefined;
+  }
+  const entry = parsed.emit?.[at];
+  if (entry === undefined) return undefined;
+
+  const options = { ...((entry["options"] as Record<string, unknown> | undefined) ?? {}) };
+  const same =
+    value === spec.default ||
+    (spec.default === undefined && (value === "" || value === undefined));
+  if (same) delete options[spec.name];
+  else options[spec.name] = value;
+
+  if (Object.keys(options).length === 0) delete entry["options"];
+  else entry["options"] = options;
+
+  const after = `${JSON.stringify(parsed, null, 2)}\n`;
+  if (after === source) return undefined;
+
+  return {
+    op: "setOption",
+    describe: same
+      ? `${spec.name}: back to the default for ${entry["provider"] as string}`
+      : `${spec.name} = ${JSON.stringify(value)} for ${entry["provider"] as string}`,
+    edits: [{ file: manifestPath, start: 0, end: source.length, text: after }],
+    diagnostics: [],
+  };
+}
+
+/** One option's row: a label, a derived control, and whether the manifest says anything about it. */
+function optionRow(at: number, entry: EntryInfo | undefined, spec: OptionSpec): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "row option";
+  row.dataset["option"] = spec.name;
+
+  const label = document.createElement("label");
+  label.textContent = spec.name;
+  label.title = spec.describe;
+  row.append(label);
+
+  const current = valueOf(entry, spec);
+  const change = (value: unknown): void => {
+    const mutation = setOption(at, spec, value);
+    if (mutation === undefined) return;
+    proposeWhat.textContent = mutation.describe;
+    const body = document.createElement("div");
+    proposeBody.replaceChildren(body);
+    showMutation(mutation, body);
+    propose.hidden = false;
+  };
+
+  if (spec.type === "boolean") {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = current === true;
+    box.title = spec.describe;
+    box.addEventListener("change", () => change(box.checked));
+    row.append(box);
+  } else if (spec.type === "enum") {
+    const pick = document.createElement("select");
+    pick.title = spec.describe;
+    for (const value of spec.of ?? []) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      pick.append(option);
+    }
+    pick.value = typeof current === "string" ? current : "";
+    pick.addEventListener("change", () => change(pick.value));
+    row.append(pick);
+  } else {
+    const input = document.createElement("input");
+    input.type = spec.type === "number" ? "number" : "text";
+    input.value = current === undefined || current === null ? "" : String(current);
+    input.title = spec.describe;
+    // A value is committed on `change` rather than on every keystroke: a preview per letter would be a
+    // preview nobody reads, and the composer already taught this lesson once.
+    input.addEventListener("change", () =>
+      change(spec.type === "number" ? Number(input.value) : input.value),
+    );
+    row.append(input);
+  }
+
+  // Said rather than implied: a row showing `record` tells you nothing about whether somebody chose it.
+  const state = document.createElement("i");
+  state.textContent = isSet(entry, spec) ? "set" : "default";
+  state.className = isSet(entry, spec) ? "set" : "default";
+  if (spec.scope === "declaration" && (entry?.rules ?? 0) > 0) {
+    state.textContent += ` · ${entry!.rules} rule${entry!.rules === 1 ? "" : "s"} may override`;
+    state.title = "a rule varies this per declaration, which is edited in the manifest";
+  }
+  row.append(state);
+
+  return row;
+}
+
+/** The panel: an entry picker, then that entry's options. */
+function showOptions(): void {
+  const body = el("optionsBody");
+
+  if (manifestPath === undefined) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = "no `.7k/build.json` beside this model, so no providers are registered";
+    body.replaceChildren(why);
+    el<HTMLSelectElement>("optionsWhich").replaceChildren();
+    return;
+  }
+
+  const which = el<HTMLSelectElement>("optionsWhich");
+  which.replaceChildren();
+  entries.forEach((entry, at) => {
+    const option = document.createElement("option");
+    option.value = String(at);
+    // The provider and where it writes, because one provider may appear twice with different output.
+    option.textContent = `${entry.provider} → ${entry.out}`;
+    which.append(option);
+  });
+  if (optionsAt >= entries.length) optionsAt = 0;
+  which.value = String(optionsAt);
+
+  const entry = entries[optionsAt];
+  const provider = providers.find((p) => p.name === entry?.provider);
+
+  if (entry === undefined || provider === undefined) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent =
+      entry === undefined
+        ? "this manifest has no entries"
+        : `\`${entry.provider}\` is not loaded, so what it can adjust is unknown`;
+    body.replaceChildren(why);
+    return;
+  }
+
+  const parts: HTMLElement[] = [];
+
+  // What the entry is, which is not an option and is worth seeing beside them.
+  const facts = document.createElement("dl");
+  for (const [key, value] of [
+    ["layout", entry.layout ?? "per-declaration"],
+    ["selects", entry.only ?? "the whole model"],
+    ["target", provider.target],
+  ] as const) {
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    facts.append(dt, dd);
+  }
+  parts.push(facts);
+
+  if (provider.options.length === 0) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = `\`${provider.name}\` declares nothing to adjust`;
+    parts.push(why);
+  } else {
+    // Entry-scoped first: those are decisions about the whole output, and a reader looking for
+    // "which namespace" should not have to scroll past six per-declaration knobs to find it.
+    const order = (s: OptionSpec): number => (s.scope === "entry" ? 0 : 1);
+    for (const spec of [...provider.options].sort((a, b) => order(a) - order(b))) {
+      parts.push(optionRow(optionsAt, entry, spec));
+    }
+  }
+
+  body.replaceChildren(...parts);
 }
 
 // ---- where the code is -----------------------------------------------------
@@ -1166,6 +1409,8 @@ interface ProviderInfo {
   readonly layouts: readonly string[];
   /** The declaration kinds it emits for, as the provider itself declares them. */
   readonly emits: readonly string[];
+  /** What it lets you adjust, which is what the options panel builds its controls from. */
+  readonly options: readonly OptionSpec[];
 }
 
 let providers: readonly ProviderInfo[] = [];
@@ -1173,8 +1418,16 @@ let providers: readonly ProviderInfo[] = [];
 async function loadProviders(): Promise<void> {
   const response = await fetch("/providers");
   if (!response.ok) return;
-  const body = (await response.json()) as { providers: ProviderInfo[]; problems: string[] };
+  const body = (await response.json()) as {
+    providers: ProviderInfo[];
+    problems: string[];
+    entries?: EntryInfo[];
+    manifest?: { path: string };
+  };
   providers = body.providers;
+  entries = body.entries ?? [];
+  manifestPath = body.manifest?.path;
+  if (!optionsPanel().hidden) showOptions();
   if (body.problems.length > 0) {
     generateProblems = body.problems;
     report(lastDiagnostics, graph?.unresolved ?? []);
@@ -3721,6 +3974,9 @@ function draw(read: Sources): void {
   status.classList.toggle("bad", hasErrors(ws.diagnostics));
   redraw();
   report(ws.diagnostics, graph?.unresolved ?? []);
+  // The manifest may have changed with the model — by this panel, or by hand. `loadProviders`
+  // was called once at startup, which is why editing `build.json` used to need a page reload.
+  void loadProviders();
 }
 
 function fillLenses(): void {
@@ -3890,6 +4146,12 @@ el("aboutClose").addEventListener("click", () => toggleAbout(false));
 el("toggleOpen").addEventListener("click", () => toggleOpen());
 el("openClose").addEventListener("click", () => toggleOpen(false));
 el("openHere").addEventListener("click", () => void openHere());
+el("toggleOptions").addEventListener("click", () => toggleOptions());
+el("optionsClose").addEventListener("click", () => toggleOptions(false));
+el<HTMLSelectElement>("optionsWhich").addEventListener("change", (e) => {
+  optionsAt = Number((e.target as HTMLSelectElement).value);
+  showOptions();
+});
 el("toggleLegend").addEventListener("click", () => toggleLegend());
 el("legendClose").addEventListener("click", () => toggleLegend(false));
 el("toggleSaga").addEventListener("click", () => toggleSaga());
@@ -4019,6 +4281,10 @@ document.addEventListener("keydown", (e) => {
       toggleOpen(false);
       return;
     }
+    if (!el("options").hidden) {
+      toggleOptions(false);
+      return;
+    }
     if (!el("legend").hidden) {
       toggleLegend(false);
       return;
@@ -4031,6 +4297,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "o" || e.key === "O") toggleOpen();
   if (e.key === "a" || e.key === "A") toggleAbout();
   if (e.key === "d" || e.key === "D") toggleData();
+  if (e.key === "j" || e.key === "J") toggleOptions();
   if (e.key === "f" || e.key === "F") toggleFocus();
   if ((e.key === "s" || e.key === "S") && !el("toggleSequence").hidden) toggleSequence();
   if ((e.key === "g" || e.key === "G") && !el("toggleSaga").hidden) toggleSaga();

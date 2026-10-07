@@ -25,6 +25,7 @@ import {
   plan,
   type Freshness,
   type Manifest,
+  type OptionSpec,
   type PlannedSymbol,
   type Provider,
   type RunResult,
@@ -52,8 +53,40 @@ export interface ProviderInfo {
    * reasoning about a target it is supposed to know nothing about.
    */
   readonly emits: readonly string[];
-  readonly options: readonly unknown[];
+  /**
+   * What this provider lets you adjust, as it declares it.
+   *
+   * Typed rather than `unknown[]`, which is what it was: carried to the page and never read, so the one
+   * thing a reader most wants to change about generated code was the one thing the editor could not
+   * touch. A control is derived from the spec — a boolean is a checkbox, an enum is a picker — for the
+   * same reason the composer's form is derived from the declaration (`docs/design.md` 7.1): a
+   * hand-written panel would be a second list of options, out of date the day a provider gains one.
+   */
+  readonly options: readonly OptionSpec[];
 }
+
+/** One entry in `.7k/build.json`, as the page needs to show and edit it. */
+export interface EntryInfo {
+  readonly provider: string;
+  readonly out: string;
+  readonly only?: string;
+  readonly layout?: string;
+  /** The values this entry sets. Absent keys are the provider's defaults. */
+  readonly options: Readonly<Record<string, unknown>>;
+  /** How many per-declaration rules it has, which this editor does not touch. */
+  readonly rules: number;
+}
+
+/** The manifest's entries, flattened for the page. */
+export const describeEntries = (manifest: Manifest | undefined): EntryInfo[] =>
+  (manifest?.emit ?? []).map((entry) => ({
+    provider: entry.provider,
+    out: entry.out,
+    ...(entry.only === undefined ? {} : { only: entry.only }),
+    ...(entry.layout === undefined ? {} : { layout: entry.layout }),
+    options: entry.options ?? {},
+    rules: entry.rules?.length ?? 0,
+  }));
 
 export const describeProviders = (providers: ReadonlyMap<string, Provider>): ProviderInfo[] =>
   [...providers.values()]
