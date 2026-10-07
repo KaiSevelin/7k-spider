@@ -10,11 +10,13 @@
 import { describe, expect, it } from "vitest";
 import { buildWorkspace, type LinkedModel, type SagaIr, type TraceEvent } from "@sevenk/core";
 import {
+  hostOf,
   layoutSaga,
   progressOf,
   sagaById,
   sagasOf,
   sayDuration,
+  sendableFrom,
   type SagaDiagram,
 } from "../src/saga.js";
 import { sayGap } from "../src/sequence.js";
@@ -567,5 +569,43 @@ describe("every row has a line to itself", () => {
         expect(row.y, `${name}: \`${row.what}\` below the card`).toBeLessThan(c.y + c.height);
       }
     }
+  });
+});
+
+
+/**
+ * Which service runs a saga, and therefore what a step of it can send.
+ *
+ * 7K declares no host: a saga is run by the service that reacts to its start message, in its own
+ * package. It matters because a saga's `send` is routed by that service's `emits` (D62), so the
+ * messages a step can send are the ones the host already emits — anything else writes a step that
+ * parses and then has nowhere to go.
+ */
+describe("a saga's host", () => {
+  it("is the service that reacts to the start message", () => {
+    const m = model();
+    const host = hostOf(m, only(m));
+    expect(host).toBeDefined();
+    expect(host?.reacts.some((r) => m.resolve(r.message) !== undefined)).toBe(true);
+  });
+
+  it("offers what that service emits, and nothing else", () => {
+    const m = model();
+    const sendable = sendableFrom(m, only(m));
+    const host = hostOf(m, only(m));
+    const emitted = new Set(
+      (host?.emits ?? []).map((e) => m.resolve(e.message)).filter((id) => id !== undefined),
+    );
+    expect(sendable.length).toBe(emitted.size);
+    expect(sendable).toEqual([...sendable].sort());
+  });
+
+  it("offers nothing when there is no host to send from", () => {
+    const m = model();
+    const saga = only(m);
+    // A saga whose package holds no service reacting to its start has nothing routable.
+    const orphan = { ...saga, id: { ...saga.id, pkg: "nowhere" } };
+    expect(sendableFrom(m, orphan)).toEqual([]);
+    expect(hostOf(m, orphan)).toBeUndefined();
   });
 });

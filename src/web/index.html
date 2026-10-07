@@ -832,6 +832,10 @@
         border: 1px solid var(--accent);
         border-radius: 8px;
         box-shadow: 0 10px 34px rgb(0 0 0 / 26%);
+        /* Above the drawers, like the other two dialogs. Without this it had none at all, so `#saga`,
+           `#data` and `#compose` — all z-index 4 — painted over it, and the one button that decides
+           whether anything is written could not be clicked while any of them was open. */
+        z-index: 6;
       }
       #propose[hidden] { display: none; }
       #proposeBody { flex: 1; overflow: auto; padding: 10px 12px; }
@@ -1159,6 +1163,7 @@
       <aside id="saga" hidden>
         <header class="panelHead">
           <select id="sagaWhich" title="which saga"></select>
+          <button type="button" id="addStep" title="add a step to this saga">+ step</button>
           <span id="sagaState"></span>
           <button type="button" id="sagaClose" title="close">&times;</button>
         </header>

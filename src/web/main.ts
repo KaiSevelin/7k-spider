@@ -23,6 +23,7 @@ import {
   addPipe,
   addSaga,
   addService,
+  addStep,
   connectEmit,
   connectReact,
   hasErrors,
@@ -54,7 +55,7 @@ import { parseMarkdown } from "../markdown.js";
 import { renderMarkdown } from "./markdown-ui.js";
 import { buildIndex, search, type Entry, type Hit } from "../search.js";
 import { renderSequence, type SequenceView } from "../sequence-view.js";
-import { progressOf, sagaById, sagasOf } from "../saga.js";
+import { hostOf, progressOf, sagaById, sagasOf, sendableFrom } from "../saga.js";
 import { renderSaga, type SagaView } from "../saga-view.js";
 import {
   blank,
@@ -2041,6 +2042,109 @@ function startAdd(): void {
   name.focus();
 }
 
+/**
+ * Adding a step to the saga on screen.
+ *
+ * The outcomes are not asked for: `replies` already declares what handling a message can result in, so
+ * `addStep` writes one `on` row per reply and the step checks out instead of tripping
+ * `unhandled-outcome`. What is asked for is the two things the model cannot answer — a name, and how
+ * long to wait.
+ *
+ * **The message list is only what routes.** A saga's `send` is routed by its host service's `emits`
+ * (D62), so offering anything else would offer a step that writes, parses, and has nowhere to go. The
+ * cost of that choice is that a host emitting nothing yet shows an empty list, so this says why rather
+ * than showing one: the fix is a connection, and that is a drag away.
+ */
+function startAddStep(): void {
+  const where = editable();
+  if (where === undefined || model === undefined) return;
+
+  const saga = sagasOf(model).find((s) => qualify(s.id) === sagaWhich.value);
+  if (saga === undefined) return;
+
+  const host = hostOf(model, saga);
+  const sendable = sendableFrom(model, saga);
+
+  proposeWhat.textContent = `add a step to ${saga.id.name}`;
+
+  if (sendable.length === 0) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent =
+      host === undefined
+        ? `nothing in ${saga.id.pkg} reacts to ${saga.start?.message.text ?? "its start message"}, so this saga has no host service to send from`
+        : `${host.id.name} emits nothing yet, and a step can only send what its saga's host already emits — connect it to a pipe first`;
+    proposeBody.replaceChildren(why);
+    proposeState.textContent = "";
+    proposeApply.hidden = true;
+    proposal = undefined;
+    propose.hidden = false;
+    return;
+  }
+
+  const form = document.createElement("div");
+  form.id = "addForm";
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.placeholder = "name";
+  name.autocomplete = "off";
+
+  const send = document.createElement("select");
+  send.title = "what this step sends";
+  for (const message of sendable) {
+    const option = document.createElement("option");
+    option.value = message;
+    option.textContent = message;
+    send.append(option);
+  }
+
+  const timeout = document.createElement("input");
+  timeout.type = "text";
+  timeout.placeholder = "timeout, e.g. 30s";
+  timeout.autocomplete = "off";
+  // Not a default: a duration nobody chose is a decision nobody made, and the preview says what
+  // leaving it out costs.
+  timeout.title = "optional, but a step without one needs the saga to have a deadline";
+
+  form.append(name, send, timeout);
+
+  const preview = document.createElement("div");
+
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const typed = name.value.trim();
+    if (typed === "") {
+      const why = document.createElement("div");
+      why.className = "why";
+      why.textContent = "type a name for the step";
+      preview.append(why);
+      proposeState.textContent = "";
+      proposeApply.hidden = true;
+      proposal = undefined;
+      return;
+    }
+    const mutation = addStep(where, {
+      saga: qualify(saga.id),
+      name: typed,
+      send: send.value,
+      ...(timeout.value.trim() === "" ? {} : { timeout: timeout.value.trim() }),
+    });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+    name.classList.toggle("bad", mutation.edits.length === 0);
+  };
+
+  name.addEventListener("input", redraw);
+  send.addEventListener("change", redraw);
+  timeout.addEventListener("input", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
+  propose.hidden = false;
+  name.focus();
+}
+
 // ---- search ----------------------------------------------------------------
 
 const KIND_LABEL: Readonly<Record<string, string>> = {
@@ -2454,6 +2558,7 @@ void loadProviders();
 el("previewClose").addEventListener("click", () => closePreview());
 el("previewAll").addEventListener("click", () => flipAll());
 el("addNew").addEventListener("click", () => startAdd());
+el("addStep").addEventListener("click", () => startAddStep());
 el("toggleCode").addEventListener("click", () => toggleCode());
 el("toggleGenerated").addEventListener("click", () => toggleGenerated());
 el("toggleData").addEventListener("click", () => toggleData());

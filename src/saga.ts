@@ -55,6 +55,7 @@ import {
   type Ref,
   type SagaIr,
   type SendIr,
+  type ServiceIr,
   type StepIr,
   type Terminal,
   type TraceEvent,
@@ -544,6 +545,48 @@ export function progressOf(
     ...(terminal === undefined ? {} : { terminal }),
     ...(endedIn === undefined ? {} : { endedIn }),
   };
+}
+
+/**
+ * The service a saga runs in.
+ *
+ * 7K declares no host: a saga is run by the service that reacts to its start message, in the saga's
+ * own package. Nothing says so in one place, so it is worked out here rather than in each caller.
+ *
+ * It matters for one practical reason. A saga's `send` is routed by that service's `emits` — routing
+ * stays in one table (D62) — so the messages a step *can* send are the ones the host already emits.
+ * Anything else would be a step that writes, checks out as text, and then has nowhere to go.
+ */
+export function hostOf(model: LinkedModel, saga: SagaIr): ServiceIr | undefined {
+  const start = saga.start === undefined ? undefined : model.resolve(saga.start.message);
+  if (start === undefined) return undefined;
+  const wanted = qualify(start);
+
+  return model.decls.find((d): d is ServiceIr => {
+    if (d.kind !== "service" || d.external || d.id.pkg !== saga.id.pkg) return false;
+    return d.reacts.some((react) => {
+      const message = model.resolve(react.message);
+      return message !== undefined && qualify(message) === wanted;
+    });
+  });
+}
+
+/**
+ * What a step of this saga could send, qualified.
+ *
+ * Only what routes, which is the whole list: offering a message the host does not emit would offer a
+ * step that cannot be delivered. An empty answer is a real state and worth saying out loud — it means
+ * the host emits nothing yet, and the fix is a connection, which is a drag away.
+ */
+export function sendableFrom(model: LinkedModel, saga: SagaIr): readonly string[] {
+  const host = hostOf(model, saga);
+  if (host === undefined) return [];
+  const out = new Set<string>();
+  for (const emit of host.emits) {
+    const message = model.resolve(emit.message);
+    if (message !== undefined) out.add(qualify(message));
+  }
+  return [...out].sort();
 }
 
 /** Every saga in the model, in declaration order, which is what a view offers to open. */
