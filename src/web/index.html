@@ -668,6 +668,13 @@
         border-radius: 6px;
         box-shadow: 0 6px 20px rgb(0 0 0 / 30%);
       }
+      /* A pipe carrying twenty messages makes twenty rows, and a menu taller than the window has
+         items nobody can reach. Bounded and scrolled rather than truncated: every row is still
+         there, which is what a menu listing what a pipe carries is for. */
+      #menu {
+        max-height: calc(100vh - 120px);
+        overflow-y: auto;
+      }
       #menu[hidden] { display: none; }
       #menu header {
         padding: 5px 8px 6px;

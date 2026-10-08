@@ -1604,6 +1604,30 @@ function openMenu(
   // would be removing more than you pointed at.
   for (const row of disconnections(at)) rows.push(row);
 
+  /**
+   * Composing a message onto the pipe under the pointer.
+   *
+   * A pipe is where you would point to ask "what travels here" and, having asked, to send one. The
+   * composer could only be opened on the whole model's list of messages, so getting from a pipe on
+   * the drawing to a body going onto it meant finding the name again in a dropdown of everything.
+   *
+   * What it carries is asked of the traffic table through `carriersOf`, which is the same question a
+   * scenario's `expect M on p` asks and the same answer the checker gives (D62) — rather than read
+   * off the drawn edges, which a lens or a focus may have narrowed.
+   */
+  if (clicked !== undefined && clicked.kind === "pipe" && model !== undefined) {
+    const pipe = clicked;
+    const carried = model.decls
+      .filter((d) => d.kind === "message")
+      .filter((d) => carriersOf(model!, d.id).some((p) => qualify(p) === qualify(pipe.id)))
+      .sort((a, b) => a.id.name.localeCompare(b.id.name));
+    for (const message of carried) {
+      rows.push(
+        item(`compose ${message.id.name}`, `onto ${pipe.id.name}`, () => composeMessage(message)),
+      );
+    }
+  }
+
   // Renaming comes first, above removing, because it is the one somebody reaches for by accident far
   // less often and by intent far more.
   if (clicked !== undefined && RENAMEABLE_HERE.has(clicked.kind)) {
@@ -2379,6 +2403,17 @@ function fillComposable(): void {
     : (composeWhat.options[0]?.value ?? "");
 }
 
+/** Opens the composer on one message, which is what a pipe's menu rows do. */
+function composeMessage(decl: Decl): void {
+  const id = `${decl.id.kind}:${decl.id.pkg}.${decl.id.name}`;
+  if (![...composeWhat.options].some((o) => o.value === id)) return;
+  composeWhat.value = id;
+  toggleCompose(true);
+  // After opening, because `toggleCompose` only starts a fresh one when nothing is being composed —
+  // and what is wanted here is this message, not whatever was left open.
+  startComposing();
+}
+
 /** Validates what has been typed and redraws the form, so every problem sits beside its own field. */
 function recheck(structural = false): void {
   if (model === undefined || composing === undefined) return;
@@ -2541,7 +2576,15 @@ async function sendComposed(): Promise<void> {
         body: composedBody,
       }),
     });
-    const outcome = (await response.json()) as {
+
+    // Read as text and parsed here, never `response.json()` straight off.
+    //
+    // A server that does not have this route answers 404 with the word `not found`, and a parse of
+    // that reports `Unexpected token 'o'` — which says nothing about what went wrong and sends the
+    // reader looking at their payload. It is not a hypothetical: `bin` runs a compiled `dist/`, so a
+    // Spider left running from before this route existed is exactly what somebody hits first.
+    const text = await response.text();
+    let outcome: {
       status?: string;
       trace?: TraceEvent[];
       problems?: string[];
@@ -2550,6 +2593,17 @@ async function sendComposed(): Promise<void> {
       said?: string[];
       problem?: string;
     };
+    try {
+      outcome = JSON.parse(text) as typeof outcome;
+    } catch {
+      composeState.textContent =
+        response.status === 404
+          ? "this Spider has no `/run` — it is older than this page, so restart it"
+          : `could not send: ${response.status} ${text.slice(0, 120)}`.trim();
+      composeState.classList.remove("good");
+      composeState.classList.add("bad");
+      return;
+    }
 
     if (!response.ok) {
       composeState.textContent = outcome.problem ?? `could not send: ${response.status}`;

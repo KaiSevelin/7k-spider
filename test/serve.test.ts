@@ -7,7 +7,7 @@
  * promises rather than whatever a library defaults to.
  */
 
-import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { readFileSync, readdirSync } from "node:fs";
@@ -202,6 +202,49 @@ describe("what the page is allowed to depend on", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * Whether this process is older than the page it serves.
+ *
+ * `dist/serve.js` falls back to serving the page out of `src/web/`, which is deliberate — one page,
+ * whether you run the built command or `tsx src/cli.ts`, with no second bundle to keep in step. It
+ * has one failure and it is quiet: the page is always current and the server may not be, so a route
+ * added and not rebuilt gives a page that asks for something this process has never heard of. The
+ * first person to press `send` found out through a 404 parsed as JSON.
+ *
+ * Checked by modification time rather than by a version, because there is no version to check: this
+ * `dist/` is not published from here and a contributor's build is however old their last one was.
+ */
+describe("a build older than its own sources", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+  it("says nothing when it is running from source, which is always current", async () => {
+    const where = await mkdtemp(join(tmpdir(), "spider-fresh-"));
+    const serving = await serve({ paths: [where], port: 0, watch: false });
+    try {
+      // These tests import `src/serve.ts`, so this *is* the from-source case.
+      expect(serving.stale).toBeUndefined();
+    } finally {
+      await serving.close();
+      await rm(where, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }, 60_000);
+
+  /**
+   * The built path cannot be exercised from here — these tests are the sources — so what is checked
+   * is the rule itself: that the comparison is against `src/*.ts` excluding the page, and that a
+   * build older than one of them is what counts as stale.
+   */
+  it("compares against the server's sources and not the page's", () => {
+    const serverSources = readdirSync(join(root, "src")).filter((f) => f.endsWith(".ts"));
+    expect(serverSources).toContain("serve.ts");
+    expect(serverSources).toContain("run.ts");
+    // The page's sources are bundled at request time and are never stale, so they are not evidence
+    // about the process — which is why `staleBuild` skips `src/web`.
+    expect(readdirSync(join(root, "src", "web"))).toContain("main.ts");
+    expect(serverSources).not.toContain("main.ts");
   });
 });
 

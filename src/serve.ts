@@ -13,7 +13,7 @@
 import { build, type BuildContext, context } from "esbuild";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { existsSync, watch, type Dirent, type FSWatcher } from "node:fs";
+import { existsSync, readdirSync, statSync, watch, type Dirent, type FSWatcher } from "node:fs";
 import { dirname, extname, join as joinPath, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWorkspace } from "@sevenk/core";
@@ -42,6 +42,61 @@ const WEB = existsSync(joinPath(HERE, "web", "index.html"))
   ? joinPath(HERE, "web")
   : joinPath(HERE, "..", "src", "web");
 
+/** True when this is a build serving the page out of the sources beside it. */
+const BUILT = WEB !== joinPath(HERE, "web");
+
+/**
+ * Whether this build is older than the sources it is serving a page from.
+ *
+ * The arrangement above has one failure, and it is a quiet one: the page is always current and the
+ * server may not be, so a route added to `serve.ts` and not rebuilt gives you a page that asks for
+ * something this process has never heard of. The page then reports a 404 at the moment somebody
+ * presses a button, which is the worst time to find out and the hardest place to recognise it.
+ *
+ * So it is said here, once, where the fix is one command away. A comparison of modification times
+ * rather than a version: there is no version to compare — `dist/` is not published from here and a
+ * contributor's build is however old their last `npm run build` was.
+ */
+function staleBuild(): string | undefined {
+  if (!BUILT) return undefined;
+  const mine = statSync(fileURLToPath(import.meta.url), { throwIfNoEntry: false })?.mtimeMs;
+  if (mine === undefined) return undefined;
+
+  const src = joinPath(HERE, "..", "src");
+  let newest = 0;
+  let name = "";
+  const walk = (dir: string): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = joinPath(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+        continue;
+      }
+      // The page's own sources are bundled at request time and are never stale, so they are not
+      // evidence about this process.
+      if (!entry.name.endsWith(".ts") || path.startsWith(joinPath(src, "web"))) continue;
+      const at = statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+      if (at > newest) {
+        newest = at;
+        name = entry.name;
+      }
+    }
+  };
+  walk(src);
+
+  return newest > mine
+    ? `this is a build from before \`src/${name}\` was last changed, and it is serving a page built ` +
+        "from those sources — run `npm run build` and restart, or the page may ask for routes this " +
+        "process does not have"
+    : undefined;
+}
+
 export interface ServeOptions {
   /** Files and directories to read `.7k` sources from. */
   readonly paths: readonly string[];
@@ -63,6 +118,8 @@ export interface Serving {
   readonly port: number;
   /** The trace file being served, if any. */
   readonly trace?: string;
+  /** Said when this process is older than the sources its page is built from. See `staleBuild`. */
+  readonly stale?: string;
   /** The source files currently being served. */
   files(): Promise<readonly { path: string; source: string }[]>;
   close(): Promise<void>;
@@ -1024,7 +1081,13 @@ export async function serve(options: ServeOptions): Promise<Serving> {
   const actual = (server.address() as { port: number } | null)?.port ?? bound;
   boundPort = actual;
 
+  // Before the URL, so it is above the line somebody copies and clicks.
+  const stale = staleBuild();
+  if (stale !== undefined) process.stderr.write(`${stale}
+`);
+
   return {
+    ...(stale === undefined ? {} : { stale }),
     url: `http://${host}:${actual}/`,
     port: actual,
     ...(tracePath === undefined ? {} : { trace: tracePath }),

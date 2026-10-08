@@ -256,6 +256,95 @@ describe("the send button", () => {
     await browser?.close().catch(() => undefined);
   });
 
+  /**
+   * What a reader sees when the server cannot answer.
+   *
+   * `bin` runs a compiled `dist/`, so a Spider left running from before this route existed answers
+   * 404 with the word `not found` — and parsing that as JSON reported `Unexpected token 'o'`, which
+   * says nothing about what went wrong and sends the reader to look at their payload. The first
+   * person to try sending hit exactly this.
+   */
+  it("says a server without the route is old, rather than failing to parse its answer", async () => {
+    if (!ready || page === undefined) return;
+    if (await page.locator("#compose").isHidden()) await page.click("#toggleCompose");
+    await page.waitForSelector("#compose:not([hidden])");
+    await page.selectOption("#composeWhat", "message:demo.Work");
+    await page.waitForTimeout(300);
+    await page.fill("#composeForm [data-path='jobId'] input", JOB);
+    await page.fill("#composeForm [data-path='size'] input", "10");
+    await page.waitForTimeout(400);
+
+    // Answering as an older Spider would, which is the one case that cannot be arranged for real.
+    await page.evaluate(() => {
+      const real = window.fetch;
+      (window as unknown as { __realFetch?: typeof fetch }).__realFetch = real;
+      window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).endsWith("/run")
+          ? new Response("not found", { status: 404, headers: { "content-type": "text/plain" } })
+          : real(input, init)) as typeof fetch;
+    });
+
+    try {
+      await page.locator("#composeSend").click();
+      await page.waitForTimeout(800);
+      const said = (await page.locator("#composeState").textContent()) ?? "";
+      expect(said).toContain("older than this page");
+      expect(said).not.toContain("JSON");
+    } finally {
+      await page.evaluate(() => {
+        const real = (window as unknown as { __realFetch?: typeof fetch }).__realFetch;
+        if (real !== undefined) window.fetch = real;
+      });
+    }
+  }, 180_000);
+
+  /**
+   * A pipe is where you point to ask what travels here, and then to send one. Before this, getting
+   * from a pipe on the drawing to a body going onto it meant finding the name again in a dropdown of
+   * every message in the model.
+   */
+  it("opens the composer on a message the pipe under the pointer carries", async () => {
+    if (!ready || page === undefined) return;
+    await page.evaluate(() => {
+      const panel = document.getElementById("compose");
+      if (panel !== null) panel.hidden = true;
+    });
+
+    const where = await page.evaluate(() => {
+      const host = document.getElementById("graph") as unknown as {
+        _cyreg?: {
+          cy?: {
+            center: (el: unknown) => void;
+            getElementById: (id: string) => {
+              length: number;
+              renderedBoundingBox: () => { x1: number; x2: number; y1: number; y2: number };
+            };
+          };
+        };
+      };
+      const cy = host?._cyreg?.cy;
+      const el = cy?.getElementById("pipe:demo.inbound");
+      if (cy === undefined || el === undefined || el.length === 0) return undefined;
+      cy.center(el);
+      const box = el.renderedBoundingBox();
+      return { x: (box.x1 + box.x2) / 2, y: (box.y1 + box.y2) / 2 };
+    });
+    expect(where, "the pipe is not drawn").toBeDefined();
+
+    const graph = await page.locator("#graph").boundingBox();
+    await page.mouse.click(graph!.x + where!.x, graph!.y + where!.y, { button: "right" });
+    await page.waitForSelector("#menu:not([hidden])");
+
+    // Everything the pipe carries, which here is the command in and both replies out.
+    const rows = await page.locator("#menu button").allTextContents();
+    expect(rows.join(" | ")).toContain("compose Work");
+    expect(rows.join(" | ")).toContain("compose Done");
+
+    await page.locator("#menu button", { hasText: "compose Work" }).first().click();
+    await page.waitForSelector("#compose:not([hidden])");
+    expect(await page.locator("#composeWhat").inputValue()).toBe("message:demo.Work");
+  }, 180_000);
+
   it("sends what the composer built, and the timeline fills with the run", async () => {
     if (!ready || page === undefined) return;
     await writeFile(
@@ -264,7 +353,7 @@ describe("the send button", () => {
       "utf-8",
     );
 
-    await page.click("#toggleCompose");
+    if (await page.locator("#compose").isHidden()) await page.click("#toggleCompose");
     await page.waitForSelector("#compose:not([hidden])");
     await page.selectOption("#composeWhat", "message:demo.Work");
     await page.waitForTimeout(300);
