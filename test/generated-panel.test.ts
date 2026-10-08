@@ -124,6 +124,44 @@ describe.skipIf(!haveProviders)("the generated-code drawer", () => {
     expect(await page.locator("#previewDocs .doc > header .path:visible").count()).toBeGreaterThan(20);
   });
 
+  /**
+   * The cards are as tall as their contents, and the list scrolls.
+   *
+   * Three tests in this file spent a long time failing on a 30s click timeout, which read as
+   * flakiness and was a real fault: `#previewDocs` is a column flex container, an item's
+   * `flex-shrink` is 1 by default, and seventy-four cards in a 740px panel were each compressed to
+   * **two pixels** rather than the list scrolling — shrinking absorbs the overflow before
+   * `overflow: auto` ever sees it. Every header still painted at its full height, outside the card
+   * that `overflow: hidden` was clipping, so a click on one landed on the list behind it.
+   *
+   * Asserted as the property rather than as a pixel count: a card is at least as tall as the header
+   * it contains, and a list of seventy-four of them has more to scroll than it can show. Either is
+   * false the moment anything squeezes them again.
+   */
+  it("gives every card its full height, and scrolls instead of squeezing them", async () => {
+    if (!ready || page === undefined) return;
+    await reset(page);
+
+    const facts = await page.evaluate(() => {
+      const list = document.getElementById("previewDocs")!;
+      const docs = [...document.querySelectorAll("#previewDocs .doc")];
+      const short = docs.filter((doc) => {
+        const header = doc.querySelector("header");
+        if (header === null) return false;
+        return doc.getBoundingClientRect().height < header.getBoundingClientRect().height;
+      });
+      return {
+        docs: docs.length,
+        clipped: short.length,
+        scrolls: list.scrollHeight > list.clientHeight,
+      };
+    });
+
+    expect(facts.docs).toBeGreaterThan(20);
+    expect(facts.clipped, "cards shorter than their own headers").toBe(0);
+    expect(facts.scrolls, "the list fits every card, which it cannot").toBe(true);
+  }, 90_000);
+
   it("opens and shuts one file when its header is clicked", async () => {
     if (!ready || page === undefined) return;
     await reset(page);

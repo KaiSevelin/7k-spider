@@ -812,6 +812,14 @@
         border-radius: 6px;
         background: var(--bg);
         overflow: hidden;
+        /* Sized by its contents, and never squeezed.
+           `#previewDocs` is a column flex container, where an item's `flex-shrink` is 1 by default —
+           so seventy-four cards in a 740px panel were each compressed to two pixels rather than the
+           list scrolling, because shrinking absorbs the overflow before `overflow: auto` ever sees
+           it. Every header still painted at its full height, outside the card that `overflow: hidden`
+           was clipping to two pixels, so the drawer looked like a stack of hairlines and a click on a
+           header landed on the list behind it. */
+        flex: 0 0 auto;
       }
       .doc > header {
         display: flex;
