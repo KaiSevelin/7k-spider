@@ -38,6 +38,7 @@
   "dependencies": {
     "@sevenk/core": "file:../7K/packages/core",
     "@sevenk/generate": "file:../7K/packages/generate",
+    "@sevenk/sandbox": "file:../7k-sandbox",
     "cytoscape": "^3.34.3",
     "cytoscape-elk": "^2.3.0",
     "elkjs": "^0.12.0"

@@ -2466,16 +2466,125 @@ function whyNotUsable(decl: Decl, which: "publish" | "expect"): string | undefin
   return undefined;
 }
 
+/**
+ * Why sending would not work, or `undefined`.
+ *
+ * Deliberately not `whyNotUsable`'s answer. That one wants a scenario to put the step in, and sending
+ * writes nothing — a model with no scenario file at all can still be sent into, which is the state
+ * somebody is in five minutes after drawing their first service.
+ */
+function whyNotSendable(decl: Decl): string | undefined {
+  if (decl.kind !== "message") return "only a message can be sent";
+  if (composedBody === undefined) return "fix what is wrong above first";
+  if (model === undefined) return "no model";
+  if (emittersOf(model, decl.id).length === 0) {
+    return "nothing emits it, so there is no pipe to send it on";
+  }
+  return undefined;
+}
+
 function showComposeUse(decl: Decl): void {
   const publish = el<HTMLButtonElement>("composePublish");
   const expect = el<HTMLButtonElement>("composeExpect");
-  const why = whyNotUsable(decl, "publish") ?? whyNotUsable(decl, "expect");
+  const send = el<HTMLButtonElement>("composeSend");
+  const why = whyNotSendable(decl) ?? whyNotUsable(decl, "publish") ?? whyNotUsable(decl, "expect");
 
   publish.disabled = whyNotUsable(decl, "publish") !== undefined;
   expect.disabled = whyNotUsable(decl, "expect") !== undefined;
-  // One reason, because the two buttons are off for the same reason almost always, and two lines of
+  send.disabled = whyNotSendable(decl) !== undefined;
+  // One reason, because the buttons are off for the same reason almost always, and two lines of
   // explanation under a form somebody is typing into is two lines they stop reading.
-  el("composeUseWhy").textContent = publish.disabled && expect.disabled ? (why ?? "") : "";
+  el("composeUseWhy").textContent =
+    publish.disabled && expect.disabled && send.disabled ? (why ?? "") : "";
+}
+
+/**
+ * Sends the composed body, and shows what happened.
+ *
+ * The same `publish` the button beside it would write into a file, run rather than saved — so what
+ * you see here is what CI sees when you keep it, rather than two paths that agree until they do not.
+ *
+ * What comes back is a trace, and this page is already a trace viewer: the timeline, the sequence
+ * diagram, the scrubber and the highlight-in-every-view all render one. So sending is "produce a
+ * trace and hand it to the player", and there is no second way of showing a run.
+ *
+ * Which services were real is said rather than implied. Everything `.7k/hosts.json` does not mention
+ * is mocked, which is what makes this useful before anything is implemented — but a reader who
+ * thought their handler ran when it did not would draw exactly the wrong conclusion from a green run.
+ */
+async function sendComposed(): Promise<void> {
+  if (model === undefined || composing === undefined || composedBody === undefined) return;
+  const decl = model.decls.find((d) => `${d.id.kind}:${d.id.pkg}.${d.id.name}` === composing!.id);
+  if (decl === undefined) return;
+
+  // The senders the model allows. Exactly one is the ordinary case and is chosen; where there are
+  // several, the first keeps the gesture one click, and the trace says which was used.
+  const senders = emittersOf(model, decl.id);
+  if (senders.length === 0) {
+    composeState.textContent = "nothing emits it, so there is no pipe to send it on";
+    composeState.classList.add("bad");
+    return;
+  }
+
+  const button = el<HTMLButtonElement>("composeSend");
+  button.disabled = true;
+  composeState.textContent = "sending…";
+  composeState.classList.remove("bad", "good");
+
+  try {
+    const response = await fetch("/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: qualify(decl.id),
+        as: qualify(senders[0]!.id),
+        body: composedBody,
+      }),
+    });
+    const outcome = (await response.json()) as {
+      status?: string;
+      trace?: TraceEvent[];
+      problems?: string[];
+      unstarted?: string[];
+      ran?: string[];
+      said?: string[];
+      problem?: string;
+    };
+
+    if (!response.ok) {
+      composeState.textContent = outcome.problem ?? `could not send: ${response.status}`;
+      composeState.classList.remove("good");
+      composeState.classList.add("bad");
+      return;
+    }
+
+    // Loaded as a run like any other, so the transport, the sequence view and the saga progress all
+    // come along without knowing where it came from.
+    runs = runsOf(outcome.trace ?? []);
+    traceProblems = [...(outcome.problems ?? []), ...(outcome.unstarted ?? [])];
+    fillRuns();
+    selectRun();
+
+    const ran = outcome.ran ?? [];
+    const said =
+      (outcome.problems ?? []).length > 0
+        ? (outcome.problems ?? []).join("; ")
+        : ran.length === 0
+          ? "sent — every service mocked"
+          : `sent — live: ${ran.map(bare).join(", ")}`;
+    const well = outcome.status === "pass" && (outcome.problems ?? []).length === 0;
+    composeState.textContent = said;
+    composeState.classList.toggle("good", well);
+    composeState.classList.toggle("bad", !well);
+
+    // Out of the way, because what there is to look at now is the drawing.
+    if ((outcome.trace ?? []).length > 0) toggleCompose(false);
+  } catch (cause) {
+    composeState.textContent = cause instanceof Error ? cause.message : String(cause);
+    composeState.classList.add("bad");
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /** Hands the composed body to the scenario step flow, with the message already chosen. */
@@ -4372,6 +4481,7 @@ el("composeClose").addEventListener("click", () => toggleCompose(false));
 composeWhat.addEventListener("change", startComposing);
 el("composeNew").addEventListener("click", () => startComposeNew());
 el("composeField").addEventListener("click", () => startComposeField());
+el("composeSend").addEventListener("click", () => void sendComposed());
 el("composePublish").addEventListener("click", () => useComposed("publish"));
 el("composeExpect").addEventListener("click", () => useComposed("expect"));
 el("run").addEventListener("change", () => selectRun());

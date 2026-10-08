@@ -17,6 +17,7 @@ import { existsSync, watch, type Dirent, type FSWatcher } from "node:fs";
 import { dirname, extname, join as joinPath, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildWorkspace } from "@sevenk/core";
+import { runOnce, type RunRequest } from "./run.js";
 import { parseManifest } from "@sevenk/generate";
 import {
   MANIFEST,
@@ -833,6 +834,52 @@ export async function serve(options: ServeOptions): Promise<Serving> {
     if (url.pathname === "/generate" && req.method === "POST") {
       const asked = JSON.parse(await read(req)) as PlanRequest;
       const outcome = await planFor(await files(), rootOf(paths), asked);
+      res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
+      res.end(JSON.stringify(outcome));
+      return;
+    }
+
+    /**
+     * Sending a message, which is running a one-step scenario.
+     *
+     * A write-shaped route even though it writes nothing to the model: it starts processes named by
+     * `.7k/hosts.json`, and a page on this machine that was not Spider's own must not be able to.
+     *
+     * The model it runs against is what is on disk now rather than what the page has, which is the
+     * same source every other route reads — a send is against the model, and the page's copy of it
+     * came from here a moment ago.
+     */
+    if (url.pathname === "/run" && req.method === "POST") {
+      if (!fromOurOwnPage(req, boundPort)) {
+        res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        res.end("not from Spider's own page");
+        return;
+      }
+
+      let asked: RunRequest;
+      try {
+        const body = JSON.parse(await read(req)) as RunRequest;
+        if (typeof body.message !== "string" || body.message === "") {
+          throw new Error("`message` must name a message");
+        }
+        asked = body;
+      } catch (cause) {
+        res.writeHead(400, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: cause instanceof Error ? cause.message : String(cause) }));
+        return;
+      }
+
+      const outcome = await runOnce(await files(), rootOf(paths), asked).catch((cause: unknown) => ({
+        // A run that threw is a fault in this and not in the model, and saying so beats a 500 that
+        // leaves the page wondering whether the message went anywhere.
+        status: "refused" as const,
+        trace: [],
+        problems: [cause instanceof Error ? cause.message : String(cause)],
+        unstarted: [],
+        ran: [],
+        said: [],
+      }));
+
       res.writeHead(200, { "content-type": MIME[".json"]!, "cache-control": "no-store" });
       res.end(JSON.stringify(outcome));
       return;

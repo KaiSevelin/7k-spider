@@ -200,6 +200,41 @@ describe("removing a declaration", () => {
     expect(new Set(errorsIn(after))).toEqual(new Set(["unresolved-reference"]));
   }, 120_000);
 
+  /**
+   * And what the drawing does with it, which is the half a reader sees.
+   *
+   * The reference text is left as written on purpose — the name records what was meant, and is what
+   * lets the pipe be put back or another renamed into its place. What becomes unknown is the
+   * *resolution*, so the drawing must keep drawing: `20-ir.md` section 5 asks every analysis to
+   * degrade rather than crash or spew false errors, and names this exact state, an edge dragged into
+   * empty space. One unresolved reference, named, and a model still there to edit.
+   */
+  it("keeps drawing, and says what is now pointing at nothing", async () => {
+    if (!ready || page === undefined) return;
+    await reset(page);
+    await rightClickNode(page, "pipe:demo.inbound");
+    await page.locator("#menu button", { hasText: "remove pipe inbound" }).first().click();
+    await apply(page);
+
+    // Still a drawing, with the services that named the pipe still on it.
+    const nodes = await page.evaluate(() => {
+      const host = document.getElementById("graph") as unknown as {
+        _cyreg?: { cy?: { nodes: () => { length: number; [i: number]: { id: () => string } } } };
+      };
+      const cy = host?._cyreg?.cy;
+      if (cy === undefined) return [];
+      const all = cy.nodes();
+      return Array.from({ length: all.length }, (_, i) => all[i]!.id());
+    });
+    expect(nodes).toContain("service:demo.Desk");
+    expect(nodes).not.toContain("pipe:demo.inbound");
+
+    // And named, rather than silently drawn as nothing.
+    const said = (await page.locator("#problemsText").textContent()) ?? "";
+    expect(said).toMatch(/unresolved/);
+    expect(said).toContain("inbound");
+  }, 120_000);
+
   /** A message was addable from the composer and never removable. */
   it("removes a message, which had no removal at all", async () => {
     if (!ready || page === undefined) return;

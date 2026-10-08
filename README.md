@@ -71,16 +71,23 @@ why, the increments, and what Spider is allowed to know.
 
 ## What it reads
 
-Two inputs, and no others.
+Two inputs, and a third that says where your code is.
 
 **The model**, through `@sevenk/core` — the same lexer, parser, linker and analyses the checker uses,
 not a copy and not a serialised form of their output. Core runs in a browser (no `node:` imports,
 sources in as strings), so Spider's view of a model cannot drift from the checker's, because it *is*
 the checker's.
 
-**A trace**, as NDJSON, through Core's reader — never from the sandbox directly. The trace is one of
-7K's published interchange artifacts, which is what makes a trace file a shareable bug report and lets
-a converter from OpenTelemetry spans point these views at production.
+**A trace**, as NDJSON, through Core's reader. The trace is one of 7K's published interchange
+artifacts, which is what makes a trace file a shareable bug report and lets a converter from
+OpenTelemetry spans point these views at production.
+
+Spider's *server* can now produce one as well as read one — `send` runs a scenario through
+`@sevenk/sandbox` and hands back the events. The line that still holds is the one that mattered: the
+**page** knows nothing about running anything. It posts a message and receives a trace, in the same
+shape a file would have given it, so the views have one input and not two. That is the same boundary
+the server already keeps for the filesystem, and it is what lets the page be hosted somewhere with
+neither.
 
 Being its second consumer is how that format came to be specified at all. Section 7 named the artifact
 and described none of it, so this package began with a hand-written copy of the shape inferred from the
@@ -174,6 +181,37 @@ than documented.
 **Validation comes from Core, not from the JSON Schema projection.** The projection is lossy by design, so
 a composer built on one would accept a payload breaking an `invariant` and have no way to say it had
 missed something. Validating against Core makes the composer exactly as strict as `7k check`.
+
+## Sending it
+
+The composer's **send** runs the message rather than writing it down: the same one-step `publish` the
+button beside it would save into a scenario, handed to the sandbox and run. What comes back is a
+trace, and this page is already a trace viewer — so a send fills the timeline, the sequence diagram
+and the scrubber, with no second way of showing a run.
+
+Everything is mocked unless something says otherwise, which is what makes a send useful before
+anything is implemented. `.7k/hosts.json` is where you say otherwise:
+
+```json
+{
+  "shop.Desk":   { "run": "dotnet", "args": ["run", "--project", "../Desk"] },
+  "shop.Picker": { "module": "./picker-host.ts", "export": "pickerDevHost" }
+}
+```
+
+**Two forms, because there are two.** A process to spawn — any language at all, speaking line-framed
+JSON over stdio, which is how your C# joins in without 7K ever learning what C# is. And a module to
+import, where in-process means your debugger is already attached to the thing you are running.
+
+Each provider generates the adapter that turns your implementation into something either form can
+host: `DeskDevHost` in C#, `deskDevHost` in TypeScript. Put a breakpoint in a handler and send a
+message at it. **No wall-clock time passes while you sit on that breakpoint** — the sandbox's clock is
+virtual, so a `timeout 30s` the model declares cannot trip because you stopped to look.
+
+A file rather than a dialog, for the same reason `layout.json` is one: where your code lives is a fact
+about your checkout, it changes rarely, it belongs in version control, and the command line and CI
+have to be able to read it too. A host that will not start is named and that service stays mocked —
+a project that does not build should not take down a run that would have told you about four others.
 
 ## Dragging, and the rule that makes it worth it
 

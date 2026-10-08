@@ -10,7 +10,9 @@
 import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_PORT, collect, serve, type Serving } from "../src/serve.js";
 import { parse } from "../src/cli.js";
@@ -156,6 +158,50 @@ describe("the layout", () => {
   it("gives every pipe kind its own shape", () => {
     expect(new Set(Object.values(PIPE_SHAPE)).size).toBe(Object.keys(PIPE_SHAPE).length);
     expect(Object.keys(PIPE_SHAPE).sort()).toEqual(["queue", "stream", "topic"]);
+  });
+});
+
+/**
+ * The page knows nothing about running anything.
+ *
+ * `send` made Spider's *server* a sandbox consumer, which it had never been — it reads a trace, it
+ * does not make one. The line that has to hold after that is the one between the server and the
+ * page: the page posts a message and receives a trace in the same shape a file would have given it,
+ * so the views have one input and not two, and the page stays hostable somewhere with no filesystem
+ * and no child processes. A documented boundary is one somebody crosses on a Tuesday, so this is
+ * the test instead.
+ */
+describe("what the page is allowed to depend on", () => {
+  const WEB = resolve(dirname(fileURLToPath(import.meta.url)), "..", "src", "web");
+  const LINES = String.fromCharCode(10);
+  // Imports only: the words appear in prose in these files, and a comment explaining the boundary is
+  // not a breach of it.
+  const IMPORT = /^\s*import\s/;
+
+  it("imports nothing from the sandbox, directly or otherwise", () => {
+    const offenders: string[] = [];
+    for (const name of readdirSync(WEB)) {
+      if (!name.endsWith(".ts")) continue;
+      const source = readFileSync(join(WEB, name), "utf-8");
+      for (const line of source.split(LINES)) {
+        if (!IMPORT.test(line)) continue;
+        if (line.includes("sandbox")) offenders.push(`${name}: ${line.trim()}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("imports no node builtins, because it runs in a browser", () => {
+    const offenders: string[] = [];
+    for (const name of readdirSync(WEB)) {
+      if (!name.endsWith(".ts")) continue;
+      const source = readFileSync(join(WEB, name), "utf-8");
+      for (const line of source.split(LINES)) {
+        if (!IMPORT.test(line)) continue;
+        if (/["']node:/.test(line)) offenders.push(`${name}: ${line.trim()}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 
