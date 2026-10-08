@@ -67,6 +67,7 @@ import {
   type Focus,
 } from "../focus.js";
 import { EVERYTHING, isPort, parseViews, resolveLens, type Lens, type Views } from "../lens.js";
+import { DEFAULT_LAYOUT, LAYOUTS } from "../layouts.js";
 import { nodeFor, renderGraph, renderLegend, type Rendered } from "../render.js";
 import { createPlayer, positions, runsOf, type Player, type Run } from "../play.js";
 import { narrate } from "../narrate.js";
@@ -151,6 +152,8 @@ const proposeBody = el("proposeBody");
 const proposeState = el("proposeState");
 const proposeApply = el<HTMLButtonElement>("proposeApply");
 const lensPicker = el<HTMLSelectElement>("lens");
+const layoutPicker = el<HTMLSelectElement>("layout");
+const dataLayoutPicker = el<HTMLSelectElement>("dataLayout");
 const focusChip = el("focus");
 const focusName = el("focusName");
 const focusHops = el("focusHops");
@@ -1014,8 +1017,6 @@ function applyHighlight(): void {
   sequence?.highlight(highlight);
   sagaView?.highlight(highlight);
   dataView?.highlight(highlight);
-  // Scoped to the selection, so selecting elsewhere re-centres it rather than leaving a stale picture.
-  if (!el("data").hidden) showData();
   // And the text marks and scrolls to the same declaration, which is what makes the flip a flip.
   showCodeSelection();
 }
@@ -1195,19 +1196,32 @@ const dataDepth = (): number => Number(el<HTMLSelectElement>("dataDepth").value)
 const DATA_KINDS: ReadonlySet<string> = new Set(["message", "record", "value", "enum", "envelope"]);
 
 /**
- * What the panel is looking around.
+ * What the panel is looking around: whatever the picker says, and nothing else.
  *
- * The selection when it is one of these, and otherwise whatever the picker says. There has to be a
- * second answer, because without one this view fell back to drawing *everything* — which `data.ts`
- * opens by calling the fastest way to make it useless, and which is what it did every time somebody
- * opened the panel before clicking anything.
+ * It used to follow the selection, so that clicking a node re-centred the panel on it. That is a
+ * click that replaces the drawing you were reading, which makes pointing at something and going
+ * somewhere the same gesture — and leaves no way to point. Now the picker is the only answer, and
+ * `centre on` in the right-click menu is how you move. It starts on a real subject rather than empty
+ * (`fillDataSubjects`), which is what following the selection was there to avoid: without either,
+ * this view fell back to drawing *everything*, which `data.ts` opens by calling the fastest way to
+ * make it useless.
  */
 function dataSubject(): SelectionId | undefined {
-  if (selection.k === "declaration" && DATA_KINDS.has(selection.id.slice(0, selection.id.indexOf(":")))) {
-    return selection.id;
-  }
   const picked = el<HTMLSelectElement>("dataSubject").value;
   return picked === "" ? undefined : (picked as SelectionId);
+}
+
+/** Points the panel at one declaration, which is what the menu's `centre on` does. */
+function centreData(id: SelectionId): void {
+  const picker = el<HTMLSelectElement>("dataSubject");
+  if (![...picker.options].some((o) => o.value === id)) return;
+  picker.value = id;
+  // `everything` is not a thing to be centred on, so asking to be centred leaves it.
+  const depth = el<HTMLSelectElement>("dataDepth");
+  if (depth.value === "0") depth.value = "2";
+  // Opens the panel if it is shut, and draws either way — so this works from the graph's menu, where
+  // the data view is the thing you are asking to see rather than the thing you are looking at.
+  toggleData(true);
 }
 
 /** Every declaration this view can be centred on, so the picker is the model's own list. */
@@ -1261,12 +1275,13 @@ function showData(): void {
 
   if (dataView === undefined) {
     dataView = renderData(el("dataCanvas"), built, {
+      // Selecting, and that alone: a click points at something, it does not go anywhere.
       onSelect: (id) => select(id),
-      // A double tap re-centres the neighbourhood, which is how you walk a data model one hop at a time.
-      onFocus: (id) => select(id),
-      // The same menu as the graph's. This is the canvas where it pays off: a code provider writes
-      // files for messages, records and values, which the graph does not draw.
+      // The same menu as the graph's, and the canvas where it pays off twice over: a code provider
+      // writes files for messages, records and values, which the graph does not draw — and `centre
+      // on` lives there, which is how this panel is walked now that a click no longer walks it.
       onContext: (at, where) => openMenu(at, where),
+      layout: dataLayoutPicker.value || DEFAULT_LAYOUT,
     });
   } else {
     dataView.update(built);
@@ -1488,6 +1503,23 @@ function openMenu(
   // how a greyed row can say "`DeliveryService` emits to it — disconnect those first" instead of
   // "cannot be removed".
   const clicked = at.id === undefined ? undefined : model?.decls.find((d) => idOf(d) === at.id);
+
+  // ---- going somewhere ------------------------------------------------------
+  //
+  // At the top, because it is the one row that is not an edit, and because it is what a click used to
+  // do. Moving it here is the point: re-centring replaces the drawing you are reading, so it has to be
+  // asked for rather than be what happens when you point at something.
+  if (at.id !== undefined && clicked !== undefined && DATA_KINDS.has(clicked.kind)) {
+    const target = clicked;
+    const id = at.id;
+    rows.push(
+      item(
+        `centre the data view on ${target.id.name}`,
+        `${target.kind}, and what it holds`,
+        () => centreData(id),
+      ),
+    );
+  }
 
   // Renaming comes first, above removing, because it is the one somebody reaches for by accident far
   // less often and by intent far more.
@@ -3934,6 +3966,7 @@ function redraw(): void {
       onMoved: (positions) => void remember(positions),
       onContext: (at, where) => openMenu(at, where),
       saved: viewOf(layout, layoutView()).nodes,
+      layout: layoutPicker.value || DEFAULT_LAYOUT,
     });
   } else {
     view.setSaved(viewOf(layout, layoutView()).nodes);
@@ -3943,6 +3976,10 @@ function redraw(): void {
   // A selection is an identity, so it survives this rebuild (`docs/design.md` 2.3) — which is the whole
   // reason it is an id and not a reference into a model that was just thrown away.
   if (selection.k === "declaration") select(selection.id);
+
+  // The data panel draws the model too, so it is redrawn when the model is. It used to come along on
+  // the selection instead, which also re-centred it on whatever had just been clicked.
+  if (!el("data").hidden) showData();
 }
 
 function draw(read: Sources): void {
@@ -3978,6 +4015,31 @@ function draw(read: Sources): void {
   // was called once at startup, which is why editing `build.json` used to need a page reload.
   void loadProviders();
 }
+
+/**
+ * Both layout pickers, from the one list.
+ *
+ * Two controls rather than one, because they are two drawings: a topology reads down the page and a
+ * message with thirty leaves does not. Neither is written to a file — a lens is a claim about the
+ * model and belongs in `views.json`, and this is a reader deciding how to hold the page.
+ */
+function fillLayouts(): void {
+  for (const picker of [layoutPicker, dataLayoutPicker]) {
+    picker.replaceChildren();
+    for (const choice of LAYOUTS) {
+      const option = document.createElement("option");
+      option.value = choice.id;
+      option.textContent = choice.label;
+      option.title = choice.title;
+      picker.append(option);
+    }
+    picker.value = DEFAULT_LAYOUT;
+    picker.title = titleOfLayout(picker.value);
+  }
+}
+
+const titleOfLayout = (id: string): string =>
+  LAYOUTS.find((l) => l.id === id)?.title ?? "how this is laid out";
 
 function fillLenses(): void {
   const chosen = lensPicker.value;
@@ -4141,6 +4203,14 @@ el("toggleData").addEventListener("click", () => toggleData());
 el("dataClose").addEventListener("click", () => toggleData(false));
 el("dataDepth").addEventListener("change", () => showData());
 el("dataSubject").addEventListener("change", () => showData());
+layoutPicker.addEventListener("change", () => {
+  layoutPicker.title = titleOfLayout(layoutPicker.value);
+  view?.relayout(layoutPicker.value);
+});
+dataLayoutPicker.addEventListener("change", () => {
+  dataLayoutPicker.title = titleOfLayout(dataLayoutPicker.value);
+  dataView?.relayout(dataLayoutPicker.value);
+});
 el("toggleAbout").addEventListener("click", () => toggleAbout());
 el("aboutClose").addEventListener("click", () => toggleAbout(false));
 el("toggleOpen").addEventListener("click", () => toggleOpen());
@@ -4317,6 +4387,9 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "+" || e.key === "=") setRadius(1);
   if (e.key === "-" || e.key === "_") setRadius(-1);
 });
+
+// Before `load`, so the first `renderGraph` reads a picker that already has a value.
+fillLayouts();
 
 void load();
 

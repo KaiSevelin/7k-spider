@@ -398,6 +398,9 @@
         border-bottom: 1px solid var(--line);
       }
       .panelHead select { flex: 1; }
+      /* Sized to its own labels. Sharing the row evenly would take the space from `#dataSubject`,
+         which holds a qualified name and is the one control here that needs room to be read. */
+      .panelHead select#dataLayout { flex: 0 0 auto; }
       .panelHead .spacer { flex: 1; }
       #composeState { color: var(--ink-dim); white-space: nowrap; }
       #composeState.bad { color: var(--warn); }
@@ -1185,6 +1188,7 @@
       </span>
       <label for="lens">lens</label>
       <select id="lens"></select>
+      <select id="layout" title="how the graph is laid out"></select>
       <label><input type="checkbox" id="packages" checked /> packages</label>
       <label><input type="checkbox" id="dead" /> dead letters</label>
     </header>
@@ -1209,7 +1213,8 @@
         <header class="panelHead">
           <b>data</b>
           <select id="dataSubject" title="what to look around"></select>
-          <select id="dataDepth" title="how far from the selection">
+          <select id="dataLayout" title="how this is laid out"></select>
+          <select id="dataDepth" title="how far from what it is around">
             <option value="1">1 hop</option>
             <option value="2" selected>2 hops</option>
             <option value="3">3 hops</option>

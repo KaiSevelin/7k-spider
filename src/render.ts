@@ -19,6 +19,7 @@ import cytoscape, { type Core, type ElementDefinition, type NodeSingular } from 
 import elk from "cytoscape-elk";
 import type { Graph, GraphNode } from "./graph.js";
 import { mergeLayout, type Point } from "./layout.js";
+import { DEFAULT_LAYOUT, withLayout } from "./layouts.js";
 import type { Highlight, SelectionId } from "./selection.js";
 
 let registered = false;
@@ -74,6 +75,8 @@ export interface RenderOptions {
    * addition rather than a replacement.
    */
   readonly onConnect?: (from: SelectionId, to: SelectionId) => void;
+  /** Which of `LAYOUTS` to start on. A canvas keeps its own, because they are different pictures. */
+  readonly layout?: string;
 }
 
 /** What a message looks like going past. */
@@ -102,6 +105,8 @@ export interface Rendered {
   positions(): Readonly<Record<SelectionId, Point>>;
   /** Re-reads the palette and restyles, for when the host's colour scheme changes under us. */
   retheme(): void;
+  /** Lays it out again under one of `LAYOUTS`, keeping whatever `layout.json` pinned. */
+  relayout(id: string): void;
   /**
    * Whether a plain drag draws a connection rather than moving a node.
    *
@@ -637,8 +642,12 @@ export function renderGraph(
    * an unsaved one takes its auto position, nudged only to clear a saved one. So adding a service cannot
    * move a saved one (`20-ir.md` 6.2).
    */
+  let chosen = options.layout ?? DEFAULT_LAYOUT;
+
   const relayout = (): void => {
-    const layout = cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions);
+    const layout = cy.layout(withLayout(LAYOUT, chosen) as unknown as cytoscape.LayoutOptions);
+    // Saved positions are placed after, whichever algorithm ran — a node somebody dragged is where
+    // they put it, and changing the layout is a question about everything they did *not* place.
     layout.on("layoutstop", () => place());
     layout.run();
   };
@@ -861,6 +870,10 @@ export function renderGraph(
     retheme() {
       cy.style(resolveStyle(STYLE, paletteOf(container)) as never);
     },
+    relayout(id) {
+      chosen = id;
+      relayout();
+    },
     setConnecting(on, from, canReach) {
       connecting = on;
       if (!on) endDrag();
@@ -898,7 +911,10 @@ export function renderGraph(
         cy.elements().remove();
         cy.add(elementsOf(next));
       });
-      const layout = cy.layout({ ...LAYOUT, fit: false } as unknown as cytoscape.LayoutOptions);
+      const layout = cy.layout({
+        ...withLayout(LAYOUT, chosen),
+        fit: false,
+      } as unknown as cytoscape.LayoutOptions);
       layout.on("layoutstop", () => place());
       layout.run();
       cy.pan(pan);

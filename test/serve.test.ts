@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEFAULT_PORT, collect, serve, type Serving } from "../src/serve.js";
 import { parse } from "../src/cli.js";
+import { DEFAULT_LAYOUT, LAYOUTS, layoutChoice, withLayout } from "../src/layouts.js";
 import { LAYOUT, LEGEND, PIPE_SHAPE, STYLE, legendElements, resolveStyle } from "../src/render.js";
 
 const MODEL = `
@@ -97,11 +98,55 @@ describe("the command line", () => {
 });
 
 describe("the layout", () => {
-  it("is layered and not a force, which is the whole of D25's stability requirement", () => {
+  it("is layered by default, which is what the drawing was designed around", () => {
     const elk = LAYOUT["elk"] as Record<string, string>;
     expect(LAYOUT["name"]).toBe("elk");
     expect(elk["algorithm"]).toBe("layered");
     expect(JSON.stringify(LAYOUT).toLowerCase()).not.toContain("force");
+    expect(DEFAULT_LAYOUT).toBe("down");
+    expect(layoutChoice(DEFAULT_LAYOUT).elk["algorithm"]).toBe("layered");
+  });
+
+  /**
+   * What D25 actually asks for.
+   *
+   * It is not that the algorithm is layered — a reader may choose otherwise, and choosing is not the
+   * drawing moving under them. It is that the same model gives the same picture, so nothing offered
+   * here may depend on an unseeded random. `stress` and `force` both would; `stress` is pinned, and
+   * this is what says so the next time somebody adds a row to that list.
+   */
+  it("offers nothing that would draw the same model twice differently", () => {
+    for (const choice of LAYOUTS) {
+      const algorithm = choice.elk["algorithm"];
+      expect(algorithm, `${choice.id} names no algorithm`).toBeDefined();
+      expect(algorithm, `${choice.id} is random by nature`).not.toBe("random");
+      // The seeded ones are the ones ELK will otherwise start from an arbitrary point.
+      if (algorithm === "stress" || algorithm === "force") {
+        expect(choice.elk["elk.randomSeed"], `${choice.id} is unseeded`).toBeDefined();
+      }
+    }
+  });
+
+  it("gives every layout a label and a reason, because a picker of ids explains nothing", () => {
+    for (const choice of LAYOUTS) {
+      expect(choice.label.length, choice.id).toBeGreaterThan(0);
+      expect(choice.title.length, choice.id).toBeGreaterThan(20);
+    }
+    expect(new Set(LAYOUTS.map((l) => l.id)).size).toBe(LAYOUTS.length);
+  });
+
+  /** A merge, so a canvas's own spacing survives a reader changing the algorithm. */
+  it("keeps the canvas's spacing when a choice is applied", () => {
+    const applied = withLayout(LAYOUT, "right");
+    const elk = applied["elk"] as Record<string, unknown>;
+    const base = LAYOUT["elk"] as Record<string, unknown>;
+    expect(elk["elk.direction"]).toBe("RIGHT");
+    expect(elk["elk.spacing.nodeNode"]).toBe(base["elk.spacing.nodeNode"]);
+    expect(applied["animate"]).toBe(false);
+  });
+
+  it("falls back to the default rather than drawing nothing for an id it does not know", () => {
+    expect(layoutChoice("nonsense").id).toBe(DEFAULT_LAYOUT);
   });
 
   it("does not animate, because an animated reshuffle is a reshuffle you watched happen", () => {

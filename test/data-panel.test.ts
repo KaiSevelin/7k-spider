@@ -109,10 +109,15 @@ describe("the data panel on opening", () => {
   }, 60_000);
 
   /**
-   * Through the palette, which is a real way to select a declaration the graph does not draw — it
+   * Selecting is not going anywhere.
+   *
+   * This panel used to re-centre on whatever was selected, so the gesture for pointing at something
+   * and the gesture for replacing the drawing were the same one — and in a view that is already hard
+   * to hold, a click that throws the picture away leaves nothing to compare the new one to. Driven
+   * through the palette, which is a real way to select a declaration the graph does not draw: it
    * draws services and pipes, and a record is neither.
    */
-  it("follows the selection when one is made", async () => {
+  it("does not move when something else is selected", async () => {
     if (!ready || page === undefined) return;
     await open(page);
     // Somewhere else first, so this cannot pass because an earlier test left it there.
@@ -123,8 +128,6 @@ describe("the data panel on opening", () => {
     });
     await page.selectOption("#dataSubject", away);
     await page.waitForTimeout(150);
-    const before = await page.locator("#dataSubject").inputValue();
-    expect(before).toBe(away);
 
     await page.keyboard.press("Control+k");
     await page.waitForSelector("#palette:not([hidden])");
@@ -133,14 +136,69 @@ describe("the data panel on opening", () => {
     await page.keyboard.press("Enter");
     await page.waitForTimeout(300);
 
-    const after = await page.locator("#dataSubject").inputValue();
-    expect(after).not.toBe("");
-    // The picker and the scope line are one panel and must not say different things.
+    // Selected — the sidebar says so — and the panel is still where it was put.
+    expect(await page.locator("#sidebar").isVisible()).toBe(true);
+    expect(await page.locator("#dataSubject").inputValue()).toBe(away);
     const scope = (await page.locator("#dataScope").textContent()) ?? "";
-    expect(scope).toMatch(/^around /);
-    const bare = after.slice(after.lastIndexOf(".") + 1);
-    expect(scope.replace("around ", "").trim()).toBe(bare);
-    expect(after).not.toBe(before);
-    expect(after).toContain("Recipient");
+    expect(scope.replace("around ", "").trim()).toBe(away.slice(away.lastIndexOf(".") + 1));
+  }, 60_000);
+
+  /** And the way that *is* meant to move it: right-click, and ask. */
+  it("moves when the menu is asked to centre it", async () => {
+    if (!ready || page === undefined) return;
+    await open(page);
+    const away = await page.evaluate(() => {
+      const picker = document.getElementById("dataSubject") as HTMLSelectElement;
+      const option = [...picker.options].find((o) => !o.value.includes("Recipient"));
+      return option?.value ?? "";
+    });
+    await page.selectOption("#dataSubject", away);
+    await page.waitForTimeout(200);
+
+    // A node of the data canvas, asked of the view rather than guessed at: Cytoscape draws to a
+    // canvas, so there is no element to right-click. Through `_cyreg`, which is how the other
+    // browser tests reach the graph's own instance. Centred first, for the same reason they do.
+    const at = await page.evaluate(() => {
+      const host = document.getElementById("dataCanvas") as unknown as {
+        _cyreg?: {
+          cy?: {
+            center: (el: unknown) => void;
+            nodes: () => {
+              length: number;
+              [i: number]: {
+                id: () => string;
+                isParent: () => boolean;
+                renderedBoundingBox: () => { x1: number; x2: number; y1: number; y2: number };
+              };
+            };
+          };
+        };
+      };
+      const cy = host?._cyreg?.cy;
+      if (cy === undefined) return undefined;
+      const nodes = cy.nodes();
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i]!;
+        const id = node.id();
+        // A package box is a parent and not a declaration, so it has no `centre on` row.
+        if (node.isParent() || !/^(record|value|enum|envelope):/.test(id)) continue;
+        cy.center(node);
+        const box = node.renderedBoundingBox();
+        if (box.x2 - box.x1 === 0) continue;
+        return { x: (box.x1 + box.x2) / 2, y: (box.y1 + box.y2) / 2, id };
+      }
+      return undefined;
+    });
+    expect(at, "no data node is drawn to right-click").toBeDefined();
+
+    const canvas = await page.locator("#dataCanvas").boundingBox();
+    await page.mouse.click(canvas!.x + at!.x, canvas!.y + at!.y, { button: "right" });
+    await page.waitForSelector("#menu:not([hidden])");
+    const row = page.locator("#menu button", { hasText: "centre the data view on" }).first();
+    expect(await row.count()).toBe(1);
+    await row.click();
+    await page.waitForTimeout(300);
+
+    expect(await page.locator("#dataSubject").inputValue()).toBe(at!.id);
   }, 60_000);
 });

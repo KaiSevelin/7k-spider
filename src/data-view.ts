@@ -14,6 +14,7 @@
 import cytoscape, { type Core, type ElementDefinition } from "cytoscape";
 import elk from "cytoscape-elk";
 import type { DataGraph, DataNode } from "./data.js";
+import { DEFAULT_LAYOUT, withLayout } from "./layouts.js";
 import { resolveStyle } from "./render.js";
 import type { Highlight, SelectionId } from "./selection.js";
 
@@ -25,10 +26,16 @@ function register(): void {
 }
 
 export interface DataViewOptions {
-  /** Called with a declaration's id when one is clicked, so the graph lights up with it. */
+  /**
+   * Called with a declaration's id when one is clicked, so every view lights up with it.
+   *
+   * Lighting up is all it does. Clicking a node used to re-centre this panel on it, which meant the
+   * drawing you were reading was replaced by a different one by the gesture you used to point at
+   * something — and a click that changes what you are looking at is the one thing a reader cannot
+   * undo by looking harder. Re-centring is in the menu now, where an action that costs you the
+   * picture has to be asked for.
+   */
   readonly onSelect?: (id: SelectionId) => void;
-  /** Called on a double tap, which is how you walk the data model one declaration at a time. */
-  readonly onFocus?: (id: SelectionId) => void;
   /**
    * Called on a right click, with what it was on and what is marked here.
    *
@@ -39,10 +46,14 @@ export interface DataViewOptions {
     at: { readonly id?: SelectionId; readonly marked: readonly SelectionId[] },
     at_page: { readonly x: number; readonly y: number },
   ) => void;
+  /** Which of `LAYOUTS` to start on. Its own, because this is not the shape the topology is. */
+  readonly layout?: string;
 }
 
 export interface DataView {
   update(data: DataGraph): void;
+  /** Lays it out again under one of `LAYOUTS`. A fan and a chain want different pictures. */
+  relayout(id: string): void;
   /** Emphasises what a highlight names and dims the rest, exactly as the graph does. */
   highlight(h: Highlight | undefined): void;
   retheme(): void;
@@ -204,8 +215,10 @@ export function renderData(
     autoungrabify: true,
   });
 
+  let chosen = options.layout ?? DEFAULT_LAYOUT;
+
   const relayout = (): void => {
-    cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions).run();
+    cy.layout(withLayout(LAYOUT, chosen) as unknown as cytoscape.LayoutOptions).run();
     // The panel is a flex column, so the canvas has no final height until the browser has laid it
     // out. Fitting in the same tick fits to the wrong box.
     requestAnimationFrame(() => {
@@ -256,12 +269,12 @@ export function renderData(
       onContext({ marked: [...marked] }, pointer(e));
     });
   }
-  if (options.onFocus !== undefined) {
-    const onFocus = options.onFocus;
-    cy.on("dbltap", "node", (e) => onFocus(e.target.id() as SelectionId));
-  }
-
   return {
+    relayout(id) {
+      chosen = id;
+      relayout();
+    },
+
     update(next) {
       cy.batch(() => {
         cy.elements().remove();
