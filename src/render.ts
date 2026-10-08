@@ -59,7 +59,19 @@ export interface RenderOptions {
    * is additive, visible, and means only "these ones, for the next thing I do".
    */
   readonly onContext?: (
-    at: { readonly id?: SelectionId; readonly marked: readonly SelectionId[] },
+    at: {
+      readonly id?: SelectionId;
+      /**
+       * The edge under the pointer, where no node was.
+       *
+       * A connection is a declaration too — an `emits` or a `reacts` clause — and the only thing on
+       * the drawing that stands for one. Without this there was no way to point at one, so the
+       * disconnect operations Core has had all along were unreachable, and the refusal `removePipe`
+       * used to give told you to use a menu row that did not exist.
+       */
+      readonly edge?: string;
+      readonly marked: readonly SelectionId[];
+    },
     /** Where the pointer was, in client coordinates. The host decides what that means on its page. */
     at_page: { readonly x: number; readonly y: number },
   ) => void;
@@ -176,6 +188,45 @@ export function resolveStyle(
 }
 
 /** The palette as the page sees it, read off whatever element the graph is drawn into. */
+/**
+ * The edge under a point, or nothing.
+ *
+ * Cytoscape draws to a canvas and exposes no hit test for one, and an edge's bounding box is a
+ * diagonal rectangle that answers "yes" across most of the drawing — so this measures distance to the
+ * line itself. Three rendered points approximate it: the two endpoints and the midpoint, which is
+ * where a bezier's bulge is, so a curved edge is matched along its curve rather than along the chord.
+ *
+ * The threshold is in rendered pixels, so it is the same reach at every zoom — which is what a person
+ * means by "near enough to click", rather than a distance in model space that gets harder to hit the
+ * further you zoom out.
+ */
+const NEAR = 10;
+
+function edgeNear(cy: Core, x: number, y: number): string | undefined {
+  const toSegment = (px: number, py: number, ax: number, ay: number, bx: number, by: number): number => {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const length = dx * dx + dy * dy;
+    // A degenerate segment is a point, which is still a thing to be near.
+    const t = length === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / length));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  };
+
+  let best: { id: string; distance: number } | undefined;
+  for (const edge of cy.edges()) {
+    const from = edge.renderedSourceEndpoint();
+    const to = edge.renderedTargetEndpoint();
+    const mid = edge.renderedMidpoint();
+    const distance = Math.min(
+      toSegment(x, y, from.x, from.y, mid.x, mid.y),
+      toSegment(x, y, mid.x, mid.y, to.x, to.y),
+    );
+    if (distance > NEAR) continue;
+    if (best === undefined || distance < best.distance) best = { id: edge.id(), distance };
+  }
+  return best?.id;
+}
+
 const paletteOf =
   (el: Element) =>
   (name: string): string | undefined => {
@@ -729,16 +780,36 @@ export function renderGraph(
       const x = e.clientX - box.left;
       const y = e.clientY - box.top;
 
-      let best: { id: SelectionId; area: number } | undefined;
+      // Smallest first, and leaves before parents. Three things can be under one pointer here: a
+      // node, a line, and the package box both of them are drawn inside. A leaf wins outright — an
+      // edge ends inside the box it points at, and what somebody means by clicking a box is the box.
+      // A *parent* does not, because a package box covers most of the drawing and every line inside
+      // it would otherwise be unreachable; so a line close enough to click beats it, and the package
+      // is what is left when neither is there.
+      let leaf: { id: SelectionId; area: number } | undefined;
+      let parent: { id: SelectionId; area: number } | undefined;
       for (const node of cy.nodes()) {
         const b = node.renderedBoundingBox();
         if (x < b.x1 || x > b.x2 || y < b.y1 || y > b.y2) continue;
-        const area = (b.x2 - b.x1) * (b.y2 - b.y1);
-        if (best === undefined || area < best.area) best = { id: node.id() as SelectionId, area };
+        const found = { id: node.id() as SelectionId, area: (b.x2 - b.x1) * (b.y2 - b.y1) };
+        const into = node.isParent() ? parent : leaf;
+        if (into === undefined || found.area < into.area) {
+          if (node.isParent()) parent = found;
+          else leaf = found;
+        }
       }
 
       const where = { x: e.clientX, y: e.clientY };
-      onContext(best === undefined ? { marked: [...marked] } : { id: best.id, marked: [...marked] }, where);
+      if (leaf !== undefined) {
+        onContext({ id: leaf.id, marked: [...marked] }, where);
+        return;
+      }
+      const edge = edgeNear(cy, x, y);
+      if (edge !== undefined) {
+        onContext({ edge, marked: [...marked] }, where);
+        return;
+      }
+      onContext(parent === undefined ? { marked: [...marked] } : { id: parent.id, marked: [...marked] }, where);
     });
   }
 

@@ -217,14 +217,23 @@ describe("the context menu", () => {
     expect(rows.join(" | ")).toContain("remove service Spare");
   }, 90_000);
 
-  it("greys the removal of a pipe something still uses, and says which", async () => {
+  /**
+   * It used to grey this row and name the clauses in the way, which was a refusal dressed as advice:
+   * the message said to disconnect them first and there was no row that could. A pipe wired to
+   * anything was undeletable here.
+   *
+   * Now the row offers it and says what it will cost, and the preview says it again with the names.
+   * The state it leaves is one the language describes rather than one it forbids — a half-drawn model
+   * parses (D20), and the unresolved reference is reported once at its own span.
+   */
+  it("offers the removal of a pipe something still uses, and says it will cost something", async () => {
     if (!ready) return;
     const p = await open();
     await rightClickOn(p, "pipe:shop.inbound");
     await p.waitForSelector("#menu:not([hidden])");
     const row = p.locator("#menu button", { hasText: "remove pipe inbound" });
-    expect(await row.isDisabled()).toBe(true);
-    expect(await row.textContent()).toContain("Desk");
+    expect(await row.isDisabled()).toBe(false);
+    expect(await row.textContent()).toContain("still names it");
   }, 90_000);
 
   it("previews a removal rather than doing it, and then does it", async () => {

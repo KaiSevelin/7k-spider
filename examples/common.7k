@@ -66,3 +66,7 @@ envelope Operator {
   operatorId: OperatorRef @role(partitionKey)
   actor:      CourierRef  @role(subject)
 }
+
+pipe tfd : queue {
+  retention 7d
+}

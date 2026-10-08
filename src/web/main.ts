@@ -32,8 +32,9 @@ import {
   addService,
   addStep,
   carriersOf,
-  removePipe,
-  removeService,
+  disconnectEmit,
+  disconnectReact,
+  removeDecl,
   rename,
   connectEmit,
   emittersOf,
@@ -1529,7 +1530,7 @@ function qnameOf(id: SelectionId): string {
   return at < 0 ? id : id.slice(at + 1);
 }
 
-function scopeOf(at: { id?: SelectionId; marked: readonly SelectionId[] }): {
+function scopeOf(at: { id?: SelectionId; edge?: string; marked: readonly SelectionId[] }): {
   only: string[];
   label: string;
 } {
@@ -1539,11 +1540,21 @@ function scopeOf(at: { id?: SelectionId; marked: readonly SelectionId[] }): {
     return { only: at.marked.map(qname), label: `${at.marked.length} marked` };
   }
   if (at.id !== undefined) return { only: [qname(at.id)], label: qname(at.id) };
+  // A line is not a declaration, so nothing can be generated for it — but it is worth naming, because
+  // a menu headed "the whole system" over a row about one clause reads as the wrong menu.
+  if (at.edge !== undefined && graph !== undefined) {
+    const edge = graph.edges.find((e) => e.id === at.edge);
+    if (edge !== undefined) {
+      const from = nodeFor(graph, edge.from)?.qname ?? edge.from;
+      const to = nodeFor(graph, edge.to)?.qname ?? edge.to;
+      return { only: [], label: `${bare(from)} → ${bare(to)}` };
+    }
+  }
   return { only: [], label: "the whole system" };
 }
 
 function openMenu(
-  at: { id?: SelectionId; marked: readonly SelectionId[] },
+  at: { id?: SelectionId; edge?: string; marked: readonly SelectionId[] },
   where: { x: number; y: number },
 ): void {
   const menu = el("menu");
@@ -1581,6 +1592,18 @@ function openMenu(
     );
   }
 
+  // ---- taking a connection apart -------------------------------------------
+  //
+  // A line stands for one or more clauses: `emits M to p` on a service, or `reacts M from p`. Core
+  // has had `disconnectEmit` and `disconnectReact` all along and nothing could reach them, because
+  // nothing on the drawing could be pointed at to mean a clause — which is also why `removePipe`'s
+  // old refusal told you to use a menu row that did not exist.
+  //
+  // One row per message, never one row for the edge. A line between two nodes bundles every message
+  // that travels between them, and a row that removed four clauses because you pointed at one line
+  // would be removing more than you pointed at.
+  for (const row of disconnections(at)) rows.push(row);
+
   // Renaming comes first, above removing, because it is the one somebody reaches for by accident far
   // less often and by intent far more.
   if (clicked !== undefined && RENAMEABLE_HERE.has(clicked.kind)) {
@@ -1595,29 +1618,33 @@ function openMenu(
     );
   }
 
-  if (clicked !== undefined && (clicked.kind === "service" || clicked.kind === "pipe")) {
+  /**
+   * Removing, for any declaration rather than for the two it used to be.
+   *
+   * It no longer greys out because something still points at the thing. `removeDecl` reports that as
+   * a warning the preview shows, because the state it leaves is one the language describes rather
+   * than one it forbids: a half-drawn model parses (D20), and an unresolved reference is reported
+   * once at its own span with everything downstream returning unknown. The preview is where the cost
+   * is read, which is what a preview is for.
+   */
+  if (clicked !== undefined) {
     const target = clicked;
     const place = editable();
-    const mutation =
-      place === undefined
-        ? undefined
-        : target.kind === "service"
-          ? removeService(place, { service: qualify(target.id) })
-          : removePipe(place, { pipe: qualify(target.id) });
-    const why =
-      mutation === undefined
-        ? "no model to edit"
-        : mutation.edits.length === 0
-          ? (mutation.diagnostics[0]?.message ?? "cannot be removed")
-          : undefined;
+    const mutation = place === undefined ? undefined : removeDecl(place, { name: qualify(target.id) });
+    const cost = mutation?.diagnostics.find((d) => d.severity === "warning");
     rows.push(
       item(
         `remove ${target.kind} ${target.id.name}`,
-        `from ${target.id.pkg}`,
+        // What it will cost, on the row, so the preview is a confirmation rather than a surprise.
+        cost === undefined ? `from ${target.id.pkg}` : "something still names it",
         () => {
           if (mutation !== undefined) showRemoval(mutation);
         },
-        why,
+        mutation === undefined
+          ? "no model to edit"
+          : mutation.edits.length === 0
+            ? (mutation.diagnostics[0]?.message ?? "cannot be removed")
+            : undefined,
       ),
     );
   }
@@ -1679,6 +1706,47 @@ function openMenu(
 
 /** What the graph draws and `rename` will take. A package is neither. */
 const RENAMEABLE_HERE = new Set(["service", "pipe", "message", "saga", "record", "value", "enum"]);
+
+/**
+ * The rows for the edge under the pointer, or none.
+ *
+ * The edge knows which end is the service and which the pipe — `emits` points at a pipe and `reacts`
+ * points away from one — so neither has to be guessed from the kinds. What it carries is a list,
+ * because a drawing bundles every message travelling the same way between the same two things.
+ */
+function disconnections(at: { edge?: string }): HTMLElement[] {
+  if (at.edge === undefined || graph === undefined || model === undefined) return [];
+  const edge = graph.edges.find((e) => e.id === at.edge);
+  if (edge === undefined) return [];
+
+  const service = edge.direction === "emits" ? edge.from : edge.to;
+  const pipe = edge.direction === "emits" ? edge.to : edge.from;
+  const serviceName = nodeFor(graph, service)?.qname;
+  const pipeName = nodeFor(graph, pipe)?.qname;
+  if (serviceName === undefined || pipeName === undefined) return [];
+
+  const place = editable();
+  return edge.messages.map((message) => {
+    const mutation =
+      place === undefined
+        ? undefined
+        : edge.direction === "emits"
+          ? disconnectEmit(place, { service: serviceName, message, pipe: pipeName })
+          : disconnectReact(place, { service: serviceName, message, pipe: pipeName });
+    return item(
+      `remove ${edge.direction} ${bare(message)} ${edge.direction === "emits" ? "to" : "from"} ${bare(pipeName)}`,
+      `on ${bare(serviceName)}`,
+      () => {
+        if (mutation !== undefined) showRemoval(mutation);
+      },
+      mutation === undefined
+        ? "no model to edit"
+        : mutation.edits.length === 0
+          ? (mutation.diagnostics[0]?.message ?? "cannot be removed")
+          : undefined,
+    );
+  });
+}
 
 /**
  * Renaming, typed into the panel every other edit goes through.
