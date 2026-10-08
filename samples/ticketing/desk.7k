@@ -80,7 +80,7 @@ message SweepStale v1.0 @command {
 
 message SweepFinished v1.0 @event {
   due:       instant @role(businessKey)
-  escalated: int { range 0.. }
+  escalated: int { range 0..1000000 }
 }
 
 // ---------------------------------------------------------------- pipes

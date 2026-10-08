@@ -87,7 +87,9 @@ message SweepAbandoned v1.0 @command {
 
 message SweepFinished v1.0 @event {
   day:     date @role(businessKey)
-  cleared: int { range 0.. }
+  // Both ends: `range 0..` bounds nothing above, so it says nothing about whether this fits in a
+  // JSON number. A day's sweep clears thousands, not quadrillions.
+  cleared: int { range 0..1000000 }
 }
 
 // ---------------------------------------------------------------- pipes

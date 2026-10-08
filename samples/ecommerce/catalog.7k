@@ -42,7 +42,10 @@ message StockReleased v1.0 @event {
 // stream below a complete account rather than a sample of one.
 message StockMoved v1.0 @event {
   sku:      common.Sku @role(businessKey)
-  delta:    int
+  // Bounded both ways on purpose: an `int` is 64-bit, and a range that does not say it fits inside
+  // what a JSON number carries exactly leaves its encoding undecided (`01-kernel.md` 7.1). A stock
+  // movement is a pallet at most in either direction.
+  delta:    int { range -1000000..1000000 }
   orderRef: common.OrderRef?
 }
 
