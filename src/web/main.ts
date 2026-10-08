@@ -1373,8 +1373,68 @@ async function browseTo(at?: string): Promise<void> {
   }
   list.replaceChildren(...rows);
 
-  here.textContent = body.here.models === 0 ? "no models here" : `open this folder (${body.here.models})`;
-  here.disabled = body.here.models === 0;
+  const empty = body.here.models === 0;
+  here.textContent = empty ? "no models here" : `open this folder (${body.here.models})`;
+  here.disabled = empty;
+
+  // A folder with nothing in it is the start of a model rather than a dead end. Offered only there,
+  // because in a folder that already has one the question is which to open and not what to call a new
+  // one.
+  const name = el<HTMLInputElement>("openName");
+  const start = el<HTMLButtonElement>("openStart");
+  name.hidden = !empty;
+  start.hidden = !empty;
+  if (empty) {
+    // The folder's own name, which is what somebody who made a directory for this already chose.
+    // Lowercased and stripped to what a package name may hold, so the default is usually right and
+    // always legal.
+    const suggested = body.at
+      .slice(Math.max(body.at.lastIndexOf("/"), body.at.lastIndexOf("\\")) + 1)
+      .toLowerCase()
+      .replace(/[^a-z0-9_.]+/g, "");
+    name.value = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$/.test(suggested) ? suggested : "demo";
+    name.classList.remove("bad");
+  }
+}
+
+/**
+ * Writes the one file a model needs to exist, and opens it.
+ *
+ * A package is one file and every mutation appends to a package's file, so with no package there is
+ * nothing Spider's `+` can write to — it says "no package with a file to add to" and stops. One line
+ * is the whole fix. The server parses it before writing, so a name the grammar would refuse is
+ * refused here rather than producing a model that does not check out.
+ */
+async function startHere(): Promise<void> {
+  if (browsingAt === undefined) return;
+  const state = el("openState");
+  const name = el<HTMLInputElement>("openName");
+  const wanted = name.value.trim();
+  if (wanted === "") {
+    name.classList.add("bad");
+    state.textContent = "a model needs a package name";
+    state.classList.add("bad");
+    return;
+  }
+
+  state.textContent = "starting…";
+  state.classList.remove("bad");
+  name.classList.remove("bad");
+
+  const response = await fetch("/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ at: browsingAt, package: wanted }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { problem?: string };
+    state.textContent = body.problem ?? `could not start one: ${response.status}`;
+    state.classList.add("bad");
+    name.classList.add("bad");
+    return;
+  }
+  // As for `openHere`: the server announces and the page reloads off that.
+  toggleOpen(false);
 }
 
 async function openHere(): Promise<void> {
@@ -2981,7 +3041,9 @@ function startAdd(): void {
     return;
   }
 
-  proposeWhat.textContent = `add a ${kind}`;
+  // `an` before a vowel, and the dropdown's own words rather than its value: a heading reading
+  // "add a external" is the kind of thing that makes a tool feel unfinished.
+  proposeWhat.textContent = kind === "external" ? "add an external service" : `add a ${kind}`;
 
   const form = document.createElement("div");
   form.id = "addForm";
@@ -2990,7 +3052,7 @@ function startAdd(): void {
   name.type = "text";
   // A pipe's name is a plain lowercase identifier and everything else is PascalCase (`10-grammar.md`),
   // so the placeholder says which this one wants rather than leaving it to be guessed.
-  name.placeholder = kind === "service" || kind === "saga" ? "Name" : "name";
+  name.placeholder = kind === "service" || kind === "external" || kind === "saga" ? "Name" : "name";
   name.autocomplete = "off";
 
   const pkg = document.createElement("select");
@@ -3044,8 +3106,8 @@ function startAdd(): void {
       return;
     }
     const mutation =
-      kind === "service"
-        ? addService(where, { pkg: pkg.value, name: typed })
+      kind === "service" || kind === "external"
+        ? addService(where, { pkg: pkg.value, name: typed, external: kind === "external" })
         : kind === "saga"
           ? addSaga(where, { pkg: pkg.value, name: typed, start: start.value })
           : addPipe(where, { pkg: pkg.value, name: typed, kind: kind as "queue" | "topic" | "stream" });
@@ -4216,6 +4278,10 @@ el("aboutClose").addEventListener("click", () => toggleAbout(false));
 el("toggleOpen").addEventListener("click", () => toggleOpen());
 el("openClose").addEventListener("click", () => toggleOpen(false));
 el("openHere").addEventListener("click", () => void openHere());
+el("openStart").addEventListener("click", () => void startHere());
+el("openName").addEventListener("keydown", (e) => {
+  if ((e as KeyboardEvent).key === "Enter") void startHere();
+});
 el("toggleOptions").addEventListener("click", () => toggleOptions());
 el("optionsClose").addEventListener("click", () => toggleOptions(false));
 el<HTMLSelectElement>("optionsWhich").addEventListener("change", (e) => {

@@ -754,8 +754,21 @@
       /* A directory with no model in it is still worth walking through, just not worth reading. */
       #openList button.empty { color: var(--ink-dim); }
       #openList .count { margin-left: auto; color: var(--ink-dim); white-space: nowrap; }
-      #openState { color: var(--ink-dim); }
+      #openState { flex: 1; color: var(--ink-dim); }
       #openState.bad { color: var(--warn); }
+      /* Only shown where there is no model to open, so it never competes with the ordinary path. */
+      #openName {
+        font: inherit;
+        font-family: var(--mono);
+        color: var(--ink);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        padding: 3px 6px;
+        width: 15ch;
+      }
+      #openName.bad { border-color: var(--warn); }
+      #openName[hidden], #openStart[hidden] { display: none; }
 
       /* What a run would write, before it writes it.
          A drawer rather than a dialog, which `#propose` still is: generated code is something you
@@ -1153,6 +1166,7 @@
         <select id="addWhat" title="what to add">
           <optgroup label="to the model">
             <option value="service">service</option>
+            <option value="external" title="a service 7K describes but does not generate &mdash; mark what sends into your system this way, and the pipe it emits to becomes a boundary pipe">external service</option>
             <option value="queue">queue</option>
             <option value="topic">topic</option>
             <option value="stream">stream</option>
@@ -1290,6 +1304,17 @@
         <ul id="openList"></ul>
         <footer class="panelFoot">
           <span id="openState"></span>
+          <input
+            type="text"
+            id="openName"
+            placeholder="package name"
+            autocomplete="off"
+            title="a dotted name, like `acme.shop` — the file is named after its last part"
+            hidden
+          />
+          <button type="button" id="openStart" title="write one file with one line and open it" hidden>
+            start a model here
+          </button>
           <button type="button" id="openHere">open this folder</button>
         </footer>
       </div>

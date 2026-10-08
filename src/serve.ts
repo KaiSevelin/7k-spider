@@ -16,6 +16,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync, watch, type Dirent, type FSWatcher } from "node:fs";
 import { dirname, extname, join as joinPath, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildWorkspace } from "@sevenk/core";
 import { parseManifest } from "@sevenk/generate";
 import {
   MANIFEST,
@@ -625,7 +626,7 @@ export async function serve(options: ServeOptions): Promise<Serving> {
       return;
     }
 
-    if (url.pathname === "/browse" || url.pathname === "/open") {
+    if (url.pathname === "/browse" || url.pathname === "/open" || url.pathname === "/start") {
       if (!onlyThisMachine) {
         res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
         res.end(`this Spider is bound to ${host}, so it will not read the disk on a page's say-so`);
@@ -669,6 +670,83 @@ export async function serve(options: ServeOptions): Promise<Serving> {
           entries: listed,
         }),
       );
+      return;
+    }
+
+    /**
+     * Starting a model where there is none.
+     *
+     * One file with one line in it, which is the whole of what a 7K model needs to exist: a package is
+     * one file (D20), and every mutation in the API appends to a package's file — so with no package
+     * there is nothing any of them can write to, and Spider's `+` says so rather than guessing a name.
+     *
+     * The text is parsed before it is written, not after. A package name is a dotted identifier and
+     * this could have checked it with a regular expression, but then the rule would live here as well
+     * as in the grammar, and the two would be free to disagree. `buildWorkspace` is the same answer
+     * `7k check` gives.
+     */
+    if (url.pathname === "/start" && req.method === "POST") {
+      if (!fromOurOwnPage(req, boundPort)) {
+        res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        res.end("not from Spider's own page");
+        return;
+      }
+
+      let at: string;
+      let name: string;
+      try {
+        const body = JSON.parse(await read(req)) as { at?: unknown; package?: unknown };
+        if (typeof body.at !== "string" || body.at === "") throw new Error("`at` must be a folder");
+        if (typeof body.package !== "string" || body.package.trim() === "") {
+          throw new Error("`package` must be a name");
+        }
+        at = resolvePath(body.at);
+        name = body.package.trim();
+      } catch (cause) {
+        res.writeHead(400, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: cause instanceof Error ? cause.message : String(cause) }));
+        return;
+      }
+
+      // The file is named after the last segment, which is what every model in `examples/` does.
+      const file = `${name.slice(name.lastIndexOf(".") + 1)}.7k`;
+      const target = joinPath(at, file);
+      const source = `package ${name}
+`;
+
+      const workspace = buildWorkspace([{ path: file, source }]);
+      const broken = workspace.diagnostics.filter((d) => d.severity === "error");
+      if (broken.length > 0) {
+        res.writeHead(400, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: `\`package ${name}\` does not parse: ${broken[0]!.message}` }));
+        return;
+      }
+
+      // Never over something already there. This writes into a folder the page named, and a silent
+      // overwrite of somebody's file would be the one unforgivable thing a tool like this can do.
+      if (existsSync(target)) {
+        res.writeHead(409, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: `${file} is already here` }));
+        return;
+      }
+
+      try {
+        await mkdir(at, { recursive: true });
+        await writeFile(target, source, "utf-8");
+      } catch (cause) {
+        res.writeHead(500, { "content-type": MIME[".json"]! });
+        res.end(JSON.stringify({ problem: cause instanceof Error ? cause.message : String(cause) }));
+        return;
+      }
+
+      paths = [at];
+      tracePath = undefined;
+      await rewatch();
+
+      res.writeHead(200, { "content-type": MIME[".json"]! });
+      res.end(JSON.stringify({ paths, file: target }));
+      announce();
+      process.stderr.write(`started ${target}\n`);
       return;
     }
 

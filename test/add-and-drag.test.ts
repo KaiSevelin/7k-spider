@@ -131,14 +131,38 @@ describe.skipIf(false)("adding a declaration", () => {
     expect(written.startsWith(MODEL.trimEnd())).toBe(true);
   }, 60_000);
 
-  it("offers a service, all three pipe kinds, and a saga", async () => {
+  it("offers a service, an external one, all three pipe kinds, and a saga", async () => {
     if (!ready) return;
     const p = await fresh();
     // The group, not the whole list: the scenario kinds sit in a group of their own and are
     // `scenario-add.test.ts`'s business.
+    //
+    // `external service` is a kind here rather than a checkbox on the service form, which is the
+    // pattern the three pipe kinds already set: what you are adding is the question this control
+    // asks, and `@external` changes what the thing *is* rather than configuring it.
     expect(
       await p.locator('#addWhat optgroup[label="to the model"] option').allTextContents(),
-    ).toEqual(["service", "queue", "topic", "stream", "saga"]);
+    ).toEqual(["service", "external service", "queue", "topic", "stream", "saga"]);
+  }, 60_000);
+
+  /**
+   * `@external` is the only way to say a pipe crosses the system boundary — it is derived from the
+   * marking and never declared (`03-topology.md` 2.6) — and it is what lets a model built here be run
+   * at all: a scenario publishes `as` a service that emits the message, and whatever sends into your
+   * system is somebody else's.
+   */
+  it("writes an external service with the annotation that makes it one", async () => {
+    if (!ready) return;
+    const p = await fresh();
+    await p.selectOption("#addWhat", "external");
+    await p.click("#addNew");
+    await p.waitForSelector("#addForm input");
+    await p.locator("#addForm input[type=text]").type("Storefront", { delay: 8 });
+    await p.waitForTimeout(150);
+    expect(await p.locator("#proposeWhat").textContent()).toContain("external service");
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain(
+      "service Storefront @external {",
+    );
   }, 60_000);
 
   /**
