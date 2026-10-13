@@ -283,3 +283,84 @@ describe("connecting", () => {
     expect(await p.locator("#status").textContent()).toContain("a pipe");
   }, 90_000);
 });
+
+/**
+ * A subscription says more than which message arrives from where.
+ *
+ * `03-topology.md` section 2 gives a `reacts` block eight attributes, and this flow could write one
+ * of them — so connecting two nodes produced a `replies none` and no way to say anything else
+ * without opening the file. The boxes are optional: left alone they write exactly what they always
+ * did.
+ */
+describe("connecting with what the subscription says", () => {
+  const rightClickOn = async (p: Page, id: string): Promise<void> => {
+    const at = await p.evaluate((wanted) => {
+      const host = document.getElementById("graph") as unknown as {
+        _cyreg?: {
+          cy?: {
+            center: (el: unknown) => void;
+            getElementById: (id: string) => {
+              length: number;
+              renderedBoundingBox: () => { x1: number; x2: number; y1: number; y2: number };
+            };
+          };
+        };
+      };
+      const cy = host?._cyreg?.cy;
+      const el = cy?.getElementById(wanted);
+      if (cy === undefined || el === undefined || el.length === 0) return undefined;
+      cy.center(el);
+      const box = el.renderedBoundingBox();
+      return { x: (box.x1 + box.x2) / 2, y: (box.y1 + box.y2) / 2 };
+    }, id);
+    expect(at, `${id} is not drawn`).toBeDefined();
+    const graph = await p.locator("#graph").boundingBox();
+    await p.mouse.click(graph!.x + at!.x, graph!.y + at!.y);
+  };
+
+  it("offers every attribute, and writes the ones that are filled in", async () => {
+    if (!ready) return;
+    const p = await open();
+
+    // `n` arms connecting; a pipe then a service is a `reacts` (the graph is bipartite, so which it
+    // is follows from which end you started at).
+    await p.keyboard.press("n");
+    await rightClickOn(p, "pipe:shop.events");
+    await rightClickOn(p, "service:shop.Desk");
+    await p.waitForSelector("#propose:not([hidden])");
+
+    // The message to react to, out of what the pipe carries.
+    await p.locator("#proposeBody button", { hasText: "Placed" }).first().click();
+    await p.waitForSelector("#reactForm");
+
+    // All eight, each captioned.
+    expect(await p.locator("#reactForm .answer > span").allTextContents()).toEqual([
+      "replies",
+      "accepts",
+      "once per",
+      "where",
+      "requires",
+      "issues",
+      "concurrency",
+      "retry",
+    ]);
+    // And described in the language's own words.
+    const retryRow = p.locator("#reactForm .answer", { hasText: "retry" }).first();
+    expect(await retryRow.getAttribute("title")).toContain("attempts");
+
+    // Left alone it writes what it always wrote.
+    expect(await p.locator("#proposeBody pre").first().textContent()).toContain("replies none");
+
+    // Filled in, it writes those too.
+    await p.locator("#reactForm .answer", { hasText: "retry" }).locator("input").fill("5 after 2s");
+    await p.waitForTimeout(250);
+    const preview = (await p.locator("#proposeBody pre").first().textContent()) ?? "";
+    expect(preview).toContain("retry   5 after 2s");
+    expect(preview).toContain("replies none");
+
+    await p.click("#proposeApply");
+    await p.waitForTimeout(500);
+    const after = await readFile(file, "utf-8");
+    expect(after).toContain("retry   5 after 2s");
+  }, 120_000);
+});

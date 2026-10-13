@@ -3006,7 +3006,54 @@ function askWhichMessage(pair: Pair): void {
   propose.hidden = false;
 }
 
-/** The preview. Nothing is written until this is accepted (`20-ir.md` 7). */
+/**
+ * What a subscription may say, as boxes.
+ *
+ * All eight attributes `03-topology.md` section 2 gives a `reacts` block. Every one is optional and
+ * written only where answered, so leaving the form alone produces the same `replies none` block this
+ * always wrote — they are there for the day somebody needs a retry policy, not to be filled in every
+ * time.
+ *
+ * `replies` and `issues` are text rather than pickers. Both are lists, and both are drawn from what
+ * the service emits — so the placeholder names those rather than a dropdown trying to be a
+ * multi-select. `where` and `requires` are text because they are predicates, which no set of boxes
+ * composes better than a line of the language itself.
+ */
+const reactAnswers = (service: string): readonly Answer[] => {
+  const emitted = (): string[] => {
+    const decl = model?.decls.find((d) => d.kind === "service" && qualify(d.id) === service);
+    if (decl === undefined || decl.kind !== "service") return [];
+    return [
+      ...new Set(
+        decl.emits
+          .map((e) => model?.resolve(e.message))
+          .filter((id): id is NonNullable<typeof id> => id !== undefined)
+          .map((id) => id.name),
+      ),
+    ].sort();
+  };
+  const orBlank = (names: string[]): string =>
+    names.length === 0 ? "none" : names.slice(0, 3).join(", ");
+
+  return [
+    { key: "replies", label: "replies", keyword: "replies", placeholder: orBlank(emitted()) },
+    { key: "accepts", label: "accepts", keyword: "accepts", placeholder: "v1.x" },
+    { key: "oncePer", label: "once per", keyword: "once per", placeholder: "the business key" },
+    { key: "where", label: "where", keyword: "where", placeholder: "envelope.priority < 5" },
+    { key: "requires", label: "requires", keyword: "requires", placeholder: 'claim.scope contains "x"' },
+    { key: "issues", label: "issues", keyword: "issues", placeholder: orBlank(emitted()) },
+    { key: "concurrency", label: "concurrency", keyword: "concurrency", placeholder: "1" },
+    { key: "retry", label: "retry", keyword: "retry", placeholder: "5 after 2s max 30s" },
+  ];
+};
+
+/**
+ * The preview. Nothing is written until this is accepted (`20-ir.md` 7).
+ *
+ * A `reacts` gets a form above it, because a subscription has eight things to say and this could
+ * only say one of them. An `emits` has nothing to ask: it is a message and a pipe, both already
+ * chosen by the two nodes that were clicked.
+ */
 function buildProposal(pair: Pair, message: string): void {
   const where = editable();
   if (where === undefined || graph === undefined) return;
@@ -3014,12 +3061,68 @@ function buildProposal(pair: Pair, message: string): void {
   const service = nodeFor(graph, pair.service)?.qname ?? pair.service;
   const pipe = nodeFor(graph, pair.pipe)?.qname ?? pair.pipe;
   const what = { service, message, pipe };
-  const mutation: Mutation =
-    pair.direction === "emits" ? connectEmit(where, what) : connectReact(where, what);
 
-  proposeWhat.textContent = mutation.describe;
-  proposeBody.replaceChildren();
-  showMutation(mutation, proposeBody);
+  if (pair.direction === "emits") {
+    const mutation = connectEmit(where, what);
+    proposeWhat.textContent = mutation.describe;
+    proposeBody.replaceChildren();
+    showMutation(mutation, proposeBody);
+    return;
+  }
+
+  const form = document.createElement("div");
+  form.id = "reactForm";
+
+  const about = document.createElement("div");
+  about.className = "about";
+  about.textContent = describeKeyword("reacts") ?? "";
+  form.append(about);
+
+  const boxes = new Map<string, HTMLInputElement>();
+  for (const answer of reactAnswers(service)) {
+    const row = document.createElement("label");
+    row.className = "answer";
+    const caption = document.createElement("span");
+    caption.textContent = answer.label;
+    const box = document.createElement("input");
+    box.type = "text";
+    box.autocomplete = "off";
+    if (answer.placeholder !== undefined) box.placeholder = answer.placeholder;
+    // The language's own words, not a second sentence written here.
+    const hint = answer.keyword === undefined ? undefined : describeKeyword(answer.keyword);
+    if (hint !== undefined) row.title = hint;
+    row.append(caption, box);
+    form.append(row);
+    boxes.set(answer.key, box);
+  }
+
+  const preview = document.createElement("div");
+
+  const redraw = (): void => {
+    preview.replaceChildren();
+    const got = (key: string): string => boxes.get(key)?.value.trim() ?? "";
+    const list = (key: string): string[] =>
+      got(key) === "" ? [] : got(key).split(",").map((v) => v.trim());
+
+    const mutation = connectReact(where, {
+      ...what,
+      replies: list("replies"),
+      issues: list("issues"),
+      accepts: got("accepts"),
+      oncePer: got("oncePer"),
+      where: got("where"),
+      requires: got("requires"),
+      concurrency: got("concurrency"),
+      retry: got("retry"),
+    });
+    proposeWhat.textContent = mutation.describe;
+    showMutation(mutation, preview);
+  };
+
+  for (const box of boxes.values()) box.addEventListener("input", redraw);
+
+  proposeBody.replaceChildren(form, preview);
+  redraw();
 }
 
 /**
@@ -3312,6 +3415,111 @@ const declsOf = (kind: Decl["kind"], from?: string): { value: string; text: stri
     .sort()
     .map((q) => ({ value: from === undefined ? q : q, text: q }));
 
+/**
+ * What every pipe asks for, beyond its name.
+ *
+ * All seven attributes `03-topology.md` section 1 gives a pipe. They are optional and written only
+ * where answered, so a form left alone produces the same one-line pipe it always did — the boxes are
+ * there for the day somebody needs `effectively-once`, not to be filled in every time.
+ *
+ * Shared across the three kinds because a pipe is a pipe: what differs is the word before the brace
+ * and what `retention` defaults to, which `03-topology.md` 1.2 requires on a topic and a stream.
+ */
+const pipeAnswers = (retention: string): readonly Answer[] => [
+  { key: "retention", label: "retention", keyword: "retention", initial: retention },
+  {
+    key: "delivery",
+    label: "delivery",
+    keyword: "delivery",
+    options: () => [
+      { value: "", text: "at-least-once — the default" },
+      { value: "at-least-once", text: "at-least-once — never lost, may duplicate" },
+      { value: "at-most-once", text: "at-most-once — may be lost, never duplicated" },
+      { value: "effectively-once", text: "effectively-once — needs a window" },
+    ],
+  },
+  {
+    key: "within",
+    label: "within",
+    // The window `effectively-once` deduplicates over. Structural rather than a separate
+    // attribute (D55), so neither half is valid alone and the operation says so.
+    placeholder: "24h",
+  },
+  {
+    key: "ordering",
+    label: "ordering by",
+    keyword: "ordering",
+    // Only fields that claim the role, because `ordering by` anything else orders by a field that
+    // may not be there — which reads like a decision and is not one.
+    options: () => [{ value: "", text: "none — the default" }, ...partitionKeyOptions()],
+  },
+  {
+    key: "durable",
+    label: "durable",
+    keyword: "durable",
+    options: () => [
+      { value: "", text: "true — the default" },
+      { value: "false", text: "false — lost on a broker restart" },
+    ],
+  },
+  { key: "maxSize", label: "maxSize", keyword: "maxSize", placeholder: "256kb" },
+  {
+    key: "dlq",
+    label: "dlq",
+    keyword: "dlq",
+    options: () => [
+      { value: "", text: "<pipe>.dead — the default" },
+      { value: "none", text: "none — nothing to dead-letter into" },
+      ...declsOf("pipe"),
+    ],
+  },
+  {
+    key: "carries",
+    label: "carries",
+    keyword: "carries",
+    placeholder: "Charge, Refund — blank for anything sent to it",
+  },
+];
+
+/** A pipe, of whichever kind. The three differ by a word and a retention default. */
+const pipeRow = (kind: "queue" | "topic" | "stream", retention: string): Addable => ({
+  kind,
+  text: kind,
+  keyword: kind,
+  names: "lower",
+  answers: pipeAnswers(retention),
+  build: (w, pkg, name, got) =>
+    addPipe(w, {
+      pkg,
+      name,
+      kind,
+      retention: got("retention"),
+      ...(got("delivery") === ""
+        ? {}
+        : { delivery: got("delivery") as "at-least-once" | "at-most-once" | "effectively-once" }),
+      ...(got("within") === "" ? {} : { within: got("within") }),
+      ...(got("ordering") === "" ? {} : { orderingBy: got("ordering") }),
+      ...(got("durable") === "false" ? { durable: false } : {}),
+      ...(got("maxSize") === "" ? {} : { maxSize: got("maxSize") }),
+      ...(got("dlq") === "" ? {} : { dlq: got("dlq") }),
+      ...(got("carries") === ""
+        ? {}
+        : { carries: got("carries").split(",").map((c) => c.trim()) }),
+    }),
+});
+
+/** Every field in the model claiming `@role(partitionKey)`, which is what `ordering by` takes. */
+const partitionKeyOptions = (): { value: string; text: string }[] => {
+  const out = new Map<string, string>();
+  for (const decl of model?.decls ?? []) {
+    if (decl.kind !== "message" && decl.kind !== "record" && decl.kind !== "envelope") continue;
+    for (const field of decl.fields) {
+      if (field.role === "partitionKey") out.set(field.name, `${field.name} — on ${decl.id.name}`);
+    }
+  }
+  return [...out].sort(([a], [b]) => a.localeCompare(b)).map(([value, text]) => ({ value, text }));
+};
+
 const ADDABLE: readonly Addable[] = [
   {
     kind: "service",
@@ -3327,30 +3535,9 @@ const ADDABLE: readonly Addable[] = [
     names: "Pascal",
     build: (w, pkg, name) => addService(w, { pkg, name, external: true }),
   },
-  {
-    kind: "queue",
-    text: "queue",
-    keyword: "queue",
-    names: "lower",
-    answers: [{ key: "retention", label: "retention", keyword: "retention", initial: "7d" }],
-    build: (w, pkg, name, got) => addPipe(w, { pkg, name, kind: "queue", retention: got("retention") }),
-  },
-  {
-    kind: "topic",
-    text: "topic",
-    keyword: "topic",
-    names: "lower",
-    answers: [{ key: "retention", label: "retention", keyword: "retention", initial: "7d" }],
-    build: (w, pkg, name, got) => addPipe(w, { pkg, name, kind: "topic", retention: got("retention") }),
-  },
-  {
-    kind: "stream",
-    text: "stream",
-    keyword: "stream",
-    names: "lower",
-    answers: [{ key: "retention", label: "retention", keyword: "retention", initial: "30d" }],
-    build: (w, pkg, name, got) => addPipe(w, { pkg, name, kind: "stream", retention: got("retention") }),
-  },
+  pipeRow("queue", "7d"),
+  pipeRow("topic", "7d"),
+  pipeRow("stream", "30d"),
   {
     kind: "message",
     text: "message",

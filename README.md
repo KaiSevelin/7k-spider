@@ -250,6 +250,12 @@ somebody finds the hard way.
 completion there cannot come to disagree about what `onMissed` means. Nothing explanatory is written
 in this repository: a second sentence about a keyword is a second thing to keep true.
 
+**The forms go as deep as the language does.** A pipe asks for all seven of its attributes and a
+subscription for all eight, each optional and written only where answered — a clause restating a
+default is a line a reader has to check against the spec to learn it says nothing. Where the language
+has a closed set the box is a list, and where it does not the box is text: `where` and `requires` are
+predicates, and no arrangement of controls composes one better than a line of 7K.
+
 ## Three ways to narrow what you are looking at
 
 A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived

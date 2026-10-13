@@ -929,7 +929,8 @@
       #proposeBody { flex: 1; overflow: auto; padding: 10px 12px; }
 
       /* What the kind is, in the language's own words, above the boxes. */
-      #addForm .about {
+      #addForm .about,
+      #reactForm .about {
         color: var(--ink-dim);
         font-size: 12px;
         margin-bottom: 8px;
@@ -948,6 +949,11 @@
         min-width: 7em;
         color: var(--ink-dim);
         font-size: 12px;
+      }
+      /* Eight boxes is a tall form, so it scrolls rather than pushing the preview off the panel. */
+      #reactForm {
+        max-height: 40vh;
+        overflow-y: auto;
       }
       .answer input,
       .answer select {
