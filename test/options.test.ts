@@ -105,6 +105,8 @@ const row = (p: Page, name: string) => p.locator(`#options .row.option[data-opti
 const read = async (): Promise<Record<string, unknown>> =>
   JSON.parse(await readFile(manifest, "utf-8")) as Record<string, unknown>;
 
+const covers = (p: Page) => p.locator("#optionsBody .cover");
+
 describe("the options panel", () => {
   it("lists what the provider declares, and nothing it does not", async () => {
     if (!ready) return;
@@ -258,5 +260,73 @@ describe("changing one", () => {
       return (await response.json()) as { files: { path: string }[] };
     });
     expect(planned.files.map((f) => f.path).some((f) => f.includes("DevHost"))).toBe(false);
+  }, 120_000);
+});
+
+/**
+ * What the provider says it can express, in the one place a reader is already looking at a target.
+ *
+ * Against the real C# provider, for the same reason the rest of this file is: the point is that the
+ * list comes from whatever the provider declares. A stub would be a second coverage declaration,
+ * which is the thing this exists to avoid.
+ */
+describe("what a provider says it can express", () => {
+  it("lists it in the provider's settings", async () => {
+    if (!ready) return;
+    const p = await open();
+    await covers(p).first().waitFor();
+    const constructs = await covers(p)
+      .locator(".construct")
+      .evaluateAll((rows) => rows.map((r) => r.textContent ?? ""));
+    // Declared by the C# provider, which is what makes these the right answers rather than ours.
+    expect(constructs).toContain("normalize");
+    expect(constructs).toContain("invariant");
+    expect(constructs).toContain("pattern");
+  }, 120_000);
+
+  it("puts what is lost before what is not", async () => {
+    if (!ready) return;
+    const p = await open();
+    await covers(p).first().waitFor();
+    const verdicts = await covers(p)
+      .locator("i.fid")
+      .evaluateAll((rows) => rows.map((r) => r.textContent ?? ""));
+    // The reason anybody opens this is to find out what they are about to lose, and a list sorted
+    // by name buries that between two constructs that are fine.
+    const rank = (v: string): number => ["none", "partial", "full"].indexOf(v);
+    expect(verdicts.map(rank)).toEqual([...verdicts.map(rank)].sort((a, b) => a - b));
+    expect(verdicts).toContain("none");
+    expect(verdicts).toContain("full");
+  }, 120_000);
+
+  it("says what becomes of a construct, not just that something did", async () => {
+    if (!ready) return;
+    const p = await open();
+    await covers(p).first().waitFor();
+    // A verdict with no note tells a reader they have a problem without saying what it is, which is
+    // what `coverageFaults` refuses to let a provider ship — so every one below `full` has a note.
+    const rows = await covers(p).evaluateAll((all) =>
+      all.map((r) => ({
+        fidelity: r.querySelector("i.fid")?.textContent ?? "",
+        note: r.querySelector(".note")?.textContent ?? "",
+      })),
+    );
+    expect(rows.length).toBeGreaterThan(3);
+    for (const { fidelity, note } of rows) {
+      if (fidelity !== "full") expect(note.length).toBeGreaterThan(20);
+    }
+  }, 120_000);
+
+  it("describes the construct in the language's own words where it has them", async () => {
+    if (!ready) return;
+    const p = await open();
+    await covers(p).first().waitFor();
+    // From `describeKeyword` in Core, so what `pattern` means is written once and reads the same
+    // here, in the composer's forms and in the editor.
+    const title = await covers(p)
+      .locator('.construct:text-is("pattern")')
+      .first()
+      .getAttribute("title");
+    expect(title ?? "").toContain("regex");
   }, 120_000);
 });

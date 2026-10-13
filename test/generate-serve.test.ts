@@ -49,6 +49,10 @@ const PROVIDER = `export const spy = {
   // Required of a provider now: the kinds it emits for, so a host can tell what it would do with a
   // selection without asking it to do it. This one only ever makes a file from a message.
   emits: ["message"],
+  // And what it can express, which is the other claim a host acts on without generating anything.
+  // Declared here because this one reports a \`normalize\` loss below, and a provider that loses
+  // something it never said it might is reported by the run.
+  covers: [{ construct: "normalize", fidelity: "none", note: "a test" }],
   options: [],
   generate(request) {
     return {

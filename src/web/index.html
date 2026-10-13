@@ -658,6 +658,32 @@
       #options .row.option i.default { color: var(--ink-dim); }
       #options .row.option i.set { color: var(--accent); }
 
+      /* What the provider says it can express. A heading, then one row per construct. */
+      #optionsBody h4 {
+        margin: 18px 0 6px;
+        font-size: 0.86em;
+        font-weight: 600;
+        color: var(--ink-dim);
+        text-transform: lowercase;
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+      }
+      /* The name and its verdict on one line, the note wrapping under both: the verdict is what is
+         scanned and the note is what is read, and a three-column row would narrow the note to a
+         gutter. */
+      #optionsBody .cover { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin: 0 0 9px; }
+      #optionsBody .cover .construct { font-family: var(--mono); font-size: 0.9em; }
+      #optionsBody .cover i.fid { font-size: 0.78em; font-style: normal; text-align: right; }
+      #optionsBody .cover i.fid.full { color: var(--ink-dim); }
+      #optionsBody .cover i.fid.partial { color: var(--warn); }
+      #optionsBody .cover i.fid.none { color: var(--bad); }
+      #optionsBody .cover .note {
+        grid-column: 1 / -1;
+        color: var(--ink-dim);
+        font-size: 0.88em;
+        line-height: 1.45;
+      }
+
       #menu {
         position: absolute;
         z-index: 7;

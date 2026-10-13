@@ -67,7 +67,7 @@ import {
 } from "@sevenk/core";
 import { edgeForEvent, isBadEvent, buildGraph, type Graph, type GraphOptions } from "../graph.js";
 import type { EntryInfo } from "../generate.js";
-import type { OptionSpec } from "@sevenk/generate";
+import type { Coverage, OptionSpec } from "@sevenk/generate";
 import type { PlannedSymbol } from "@sevenk/generate";
 import {
   applyFocus,
@@ -614,6 +614,59 @@ function optionRow(at: number, entry: EntryInfo | undefined, spec: OptionSpec): 
   return row;
 }
 
+/**
+ * What this provider says it can express, worst first.
+ *
+ * **Worst first, and not alphabetically**, because the reason anybody opens this is to find out
+ * what they are about to lose. A list sorted by name buries `pattern: none` between `multipleOf`
+ * and `range`, and the reader who needed it was the reader who did not scroll.
+ *
+ * The construct's own description comes from the language rather than from the provider, where the
+ * construct happens to be a keyword 7K can describe — so what `once per` means is written once, in
+ * Core, and shown identically here, in the composer's forms and in the editor. The provider's note
+ * says what becomes of it, which is the only part a provider is better placed to answer.
+ */
+function coverageOf(provider: ProviderInfo): HTMLElement[] {
+  if (provider.covers.length === 0) {
+    const why = document.createElement("div");
+    why.className = "why";
+    // Not "has no gaps": nobody said that. An absent declaration and a clean one read differently.
+    why.textContent = `\`${provider.name}\` says nothing about what it can express`;
+    return [why];
+  }
+
+  const rank: Readonly<Record<string, number>> = { none: 0, partial: 1, full: 2 };
+  const covers = [...provider.covers].sort(
+    (a, b) => rank[a.fidelity]! - rank[b.fidelity]! || a.construct.localeCompare(b.construct),
+  );
+
+  const rows = covers.map((cover) => {
+    const row = document.createElement("div");
+    row.className = "cover";
+
+    const name = document.createElement("span");
+    name.className = "construct";
+    name.textContent = cover.construct;
+    const says = describeKeyword(cover.construct);
+    if (says !== undefined) name.title = says;
+
+    const badge = document.createElement("i");
+    badge.className = `fid ${cover.fidelity}`;
+    badge.textContent = cover.fidelity;
+
+    row.append(name, badge);
+    if (cover.note !== undefined && cover.note !== "") {
+      const note = document.createElement("span");
+      note.className = "note";
+      note.textContent = cover.note;
+      row.append(note);
+    }
+    return row;
+  });
+
+  return rows;
+}
+
 /** The panel: an entry picker, then that entry's options. */
 function showOptions(): void {
   const body = el("optionsBody");
@@ -683,6 +736,15 @@ function showOptions(): void {
       parts.push(optionRow(optionsAt, entry, spec));
     }
   }
+
+  // After the options, because a reader arrives here to change a setting — and then wants to know
+  // what this target gives up whatever they set it to. Several of the notes name an option, which
+  // only reads as advice once the option is on the screen above it.
+  const heading = document.createElement("h4");
+  heading.textContent = "what it can express";
+  heading.title =
+    "declared by the provider and checked against what it actually loses when it generates";
+  parts.push(heading, ...coverageOf(provider));
 
   body.replaceChildren(...parts);
 }
@@ -1496,6 +1558,8 @@ interface ProviderInfo {
   readonly emits: readonly string[];
   /** What it lets you adjust, which is what the options panel builds its controls from. */
   readonly options: readonly OptionSpec[];
+  /** What it can and cannot express, construct by construct, as the provider itself declares it. */
+  readonly covers: readonly Coverage[];
 }
 
 let providers: readonly ProviderInfo[] = [];

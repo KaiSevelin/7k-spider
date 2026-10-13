@@ -23,6 +23,7 @@ import {
   loadProviders,
   parseManifest,
   plan,
+  type Coverage,
   type Freshness,
   type Manifest,
   type OptionSpec,
@@ -53,6 +54,20 @@ export interface ProviderInfo {
    * reasoning about a target it is supposed to know nothing about.
    */
   readonly emits: readonly string[];
+  /**
+   * What this provider can and cannot express, construct by construct, as it declares it.
+   *
+   * The question somebody has before committing a model to a target — *will it still mean what I
+   * wrote* — and the only place it is answered without generating anything. Carried here because the
+   * provider settings are where a reader already is when they ask: they are looking at a target and
+   * deciding what to set, and "a `pattern` becomes nothing in SQL Server" is the fact that changes
+   * what they do next.
+   *
+   * Taken from the provider rather than written here, for the same reason `emits` is: Spider
+   * reasoning about a target it is supposed to know nothing about would be a worse answer and a
+   * coupling besides.
+   */
+  readonly covers: readonly Coverage[];
   /**
    * What this provider lets you adjust, as it declares it.
    *
@@ -95,6 +110,7 @@ export const describeProviders = (providers: ReadonlyMap<string, Provider>): Pro
       target: p.target,
       layouts: p.layouts,
       emits: p.emits,
+      covers: p.covers,
       options: p.options,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
