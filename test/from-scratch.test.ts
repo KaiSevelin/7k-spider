@@ -73,7 +73,7 @@ const beginAdd = async (p: Page, kind: string): Promise<void> => {
   await p.selectOption("#addWhat", kind);
   await p.click("#addNew");
   await p.waitForSelector("#propose:not([hidden])");
-  await p.waitForSelector("#addForm input");
+  await p.waitForSelector("#addName");
 };
 
 const applyAdd = async (p: Page): Promise<void> => {
@@ -176,17 +176,17 @@ describe("starting from an empty folder", () => {
     // `external service` is a kind in the `+`, beside `service` — the same way `queue`, `topic` and
     // `stream` are three kinds rather than a pipe plus a picker.
     await beginAdd(page, "external");
-    await page.fill("#addForm input[type=text]", "Storefront");
+    await page.fill("#addName", "Storefront");
     await page.waitForTimeout(150);
     await applyAdd(page);
 
     await beginAdd(page, "service");
-    await page.fill("#addForm input[type=text]", "Desk");
+    await page.fill("#addName", "Desk");
     await page.waitForTimeout(150);
     await applyAdd(page);
 
     await beginAdd(page, "queue");
-    await page.fill("#addForm input[type=text]", "inbound");
+    await page.fill("#addName", "inbound");
     await page.waitForTimeout(150);
     await applyAdd(page);
 
@@ -201,5 +201,55 @@ describe("starting from an empty folder", () => {
     expect(storefront?.kind === "service" && storefront.external).toBe(true);
     const desk = workspace.model.decls.find((d) => d.id.name === "Desk");
     expect(desk?.kind === "service" && desk.external).toBe(false);
+  }, 180_000);
+
+  /**
+   * The Contract layer, through the controls.
+   *
+   * The demo's first half built a topology — services, a pipe, a connection — and had nothing to put
+   * on it, because eight of the language's thirteen kinds could not be added here at all. These are
+   * the ones that carry the data.
+   */
+  it("adds a value, an enum, a message and an envelope through the `+`", async () => {
+    if (!ready || page === undefined || empty === undefined) return;
+
+    await beginAdd(page, "value");
+    await page.fill("#addName", "Sku");
+    await page.fill("#addForm .answer input", "string");
+    await page.waitForTimeout(150);
+    await applyAdd(page);
+
+    await beginAdd(page, "enum");
+    await page.fill("#addName", "Status");
+    await page.fill("#addForm .answer input", "Open, Shipped");
+    await page.waitForTimeout(150);
+    await applyAdd(page);
+
+    await beginAdd(page, "envelope");
+    await page.fill("#addName", "Trace");
+    await page.waitForTimeout(150);
+    await applyAdd(page);
+
+    await beginAdd(page, "message");
+    await page.fill("#addName", "Dropped");
+    await page.waitForTimeout(150);
+    await applyAdd(page);
+
+    const { files, workspace } = await onDisk(empty);
+    const source = files[0]!.source;
+    expect(source).toContain("value Sku : string {");
+    expect(source).toContain("enum Status {");
+    expect(source).toContain("  Open");
+    expect(source).toContain("  Shipped");
+    expect(source).toContain("envelope Trace {");
+    expect(source).toContain("message Dropped v1.0 @event {");
+    expect(workspace.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+
+    // Each is the kind it said, rather than text that happens to parse.
+    const kinds = new Map(workspace.model.decls.map((d) => [d.id.name, d.kind]));
+    expect(kinds.get("Sku")).toBe("value");
+    expect(kinds.get("Status")).toBe("enum");
+    expect(kinds.get("Trace")).toBe("envelope");
+    expect(kinds.get("Dropped")).toBe("message");
   }, 180_000);
 });

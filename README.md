@@ -240,6 +240,16 @@ The mutation API is Core's, not Spider's: the specification says "one implementa
 Every byte outside the edit is unchanged, and connect-then-disconnect is byte-identical — both verified on
 the real examples.
 
+**The `+` offers every declaration the language has** — all thirteen kinds, from a `value` to a
+`schedule` to the two header clauses that are not named declarations at all. A test asserts the list
+against the grammar, so a kind added to 7K and not offered here is a failing build rather than a gap
+somebody finds the hard way.
+
+**And each form says what it is making, in the language's own words.** The text is Core's
+`describeKeyword`, reading the same table an editor's completions read — so a tooltip here and a
+completion there cannot come to disagree about what `onMissed` means. Nothing explanatory is written
+in this repository: a second sentence about a keyword is a second thing to keep true.
+
 ## Three ways to narrow what you are looking at
 
 A **lens** hides durably, because someone saved it in `views.json`. A **focus** hides transiently, derived

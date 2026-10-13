@@ -105,7 +105,7 @@ describe.skipIf(false)("adding a declaration", () => {
     await p.selectOption("#addWhat", "topic");
     await p.click("#addNew");
     await p.waitForSelector("#propose:not([hidden])");
-    await p.locator("#addForm input").type("audit", { delay: 8 });
+    await p.locator("#addName").type("audit", { delay: 8 });
     await p.waitForTimeout(150);
 
     // Previewed, and the file untouched.
@@ -118,8 +118,8 @@ describe.skipIf(false)("adding a declaration", () => {
     const p = await fresh();
     await p.selectOption("#addWhat", "topic");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input").type("audit", { delay: 8 });
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").type("audit", { delay: 8 });
     await p.waitForTimeout(150);
     await p.click("#proposeApply");
     await p.waitForTimeout(800);
@@ -131,18 +131,79 @@ describe.skipIf(false)("adding a declaration", () => {
     expect(written.startsWith(MODEL.trimEnd())).toBe(true);
   }, 60_000);
 
-  it("offers a service, an external one, all three pipe kinds, and a saga", async () => {
+  /**
+   * Every declaration the grammar accepts, and nothing else.
+   *
+   * Five of the language's thirteen kinds could be added here and eight could not, so a model built
+   * in this editor could have services and pipes and no types to put on them. Asserted as the whole
+   * list rather than a sample, so a kind added to the language and not offered here shows up as a
+   * failure — which is the only way a gap like that gets noticed before somebody hits it.
+   *
+   * The group, not the whole dropdown: the scenario kinds sit in a group of their own and are
+   * `scenario-add.test.ts`'s business.
+   *
+   * `external service` is a kind rather than a checkbox on the service form, which is the pattern the
+   * three pipe kinds already set: what you are adding is the question this control asks, and
+   * `@external` changes what the thing *is* rather than configuring it.
+   */
+  it("offers every declaration the language has", async () => {
     if (!ready) return;
     const p = await fresh();
-    // The group, not the whole list: the scenario kinds sit in a group of their own and are
-    // `scenario-add.test.ts`'s business.
-    //
-    // `external service` is a kind here rather than a checkbox on the service form, which is the
-    // pattern the three pipe kinds already set: what you are adding is the question this control
-    // asks, and `@external` changes what the thing *is* rather than configuring it.
     expect(
       await p.locator('#addWhat optgroup[label="to the model"] option').allTextContents(),
-    ).toEqual(["service", "external service", "queue", "topic", "stream", "saga"]);
+    ).toEqual([
+      "message",
+      "record",
+      "value",
+      "enum",
+      "envelope",
+      "upcast",
+      "label",
+      "queue",
+      "topic",
+      "stream",
+      "service",
+      "external service",
+      "saga",
+      "schedule",
+      "import",
+      "envelopes",
+    ]);
+  }, 60_000);
+
+  /**
+   * Each form says what it is making, in the language's own words.
+   *
+   * The text comes from Core's `describeKeyword`, which reads the table `completion.ts` already used
+   * for editor completions — so a tooltip here and a completion in an editor cannot come to disagree
+   * about what a `schedule` is. A sentence written in this file would have been a second one to keep
+   * true.
+   */
+  it("describes the kind, and the boxes it asks for", async () => {
+    if (!ready) return;
+    const p = await fresh();
+
+    await p.selectOption("#addWhat", "schedule");
+    await p.click("#addNew");
+    await p.waitForSelector("#addForm");
+    expect(await p.locator("#addForm .about").textContent()).toContain("recurring");
+
+    // One row per answer, each captioned, and the ones the language describes carry its words.
+    const captions = await p.locator("#addForm .answer > span").allTextContents();
+    expect(captions).toEqual(["every", "in", "sends", "onMissed"]);
+    const onMissed = p.locator("#addForm .answer", { hasText: "onMissed" }).first();
+    expect(await onMissed.getAttribute("title")).toContain("skip");
+  }, 60_000);
+
+  /** Two of them are header clauses rather than named declarations, so there is no name to ask for. */
+  it("asks for no name where the language does not have one", async () => {
+    if (!ready) return;
+    const p = await fresh();
+    await p.selectOption("#addWhat", "import");
+    await p.click("#addNew");
+    await p.waitForSelector("#addForm");
+    expect(await p.locator("#addName").isHidden()).toBe(true);
+    expect(await p.locator("#addForm .answer > span").allTextContents()).toEqual(["package"]);
   }, 60_000);
 
   /**
@@ -156,8 +217,8 @@ describe.skipIf(false)("adding a declaration", () => {
     const p = await fresh();
     await p.selectOption("#addWhat", "external");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input[type=text]").type("Storefront", { delay: 8 });
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").type("Storefront", { delay: 8 });
     await p.waitForTimeout(150);
     expect(await p.locator("#proposeWhat").textContent()).toContain("external service");
     expect(await p.locator("#proposeBody pre").first().textContent()).toContain(
@@ -174,7 +235,7 @@ describe.skipIf(false)("adding a declaration", () => {
     const p = await fresh();
     await p.selectOption("#addWhat", "saga");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
+    await p.waitForSelector("#addName");
     expect(await p.locator("#addForm select").count()).toBe(2);
     expect(await p.locator("#addForm select").nth(1).locator("option").allTextContents()).toContain(
       "shop.PlaceOrder",
@@ -186,8 +247,8 @@ describe.skipIf(false)("adding a declaration", () => {
     const p = await fresh();
     await p.selectOption("#addWhat", "saga");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input").type("Checkout", { delay: 8 });
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").type("Checkout", { delay: 8 });
     await p.waitForTimeout(200);
     const preview = await p.locator("#proposeBody pre").first().textContent();
     expect(preview).toContain("saga Checkout v1.0 {");
@@ -204,8 +265,8 @@ describe.skipIf(false)("adding a declaration", () => {
     const p = await fresh();
     await p.selectOption("#addWhat", "service");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input").type("Audit", { delay: 8 });
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").type("Audit", { delay: 8 });
     await p.waitForTimeout(150);
     expect(await p.locator("#proposeBody pre").first().textContent()).toContain("service Audit");
   }, 60_000);
@@ -216,8 +277,8 @@ describe.skipIf(false)("adding a declaration", () => {
     const p = await fresh();
     await p.selectOption("#addWhat", "queue");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input").type("INBOUND", { delay: 8 });
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").type("INBOUND", { delay: 8 });
     await p.waitForTimeout(200);
     expect(await p.locator("#proposeBody .why").textContent()).toContain("already declares");
     expect(await p.locator("#proposeApply").isHidden()).toBe(true);

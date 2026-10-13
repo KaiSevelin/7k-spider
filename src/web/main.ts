@@ -20,16 +20,25 @@
 import {
   applyAll,
   buildWorkspace,
+  describeKeyword,
   addPipe,
   addSaga,
+  addSchedule,
   addAdvance,
   addExpect,
   addField,
   addMessage,
+  addEnum,
+  addEnvelope,
+  addEnvelopes,
+  addImport,
+  addLabel,
   addRecord,
   addPublish,
   addScenario,
   addService,
+  addUpcast,
+  addValue,
   addStep,
   carriersOf,
   disconnectEmit,
@@ -3247,6 +3256,275 @@ async function stepHistory(which: "undo" | "redo"): Promise<void> {
  * the page, and the next letter is read as a shortcut. So the name box and the package picker are made
  * here, and only the text below them is redrawn.
  */
+/**
+ * One answer a kind needs beyond a name and a package.
+ *
+ * `keyword` is the word the language uses, and the hint beside the box comes from Core's own
+ * description of it rather than from a sentence written here. That is the whole reason the vocabulary
+ * was exported: `completion.ts` already says what `onMissed` means, and a second sentence in this
+ * file would be a second thing to keep true.
+ */
+interface Answer {
+  readonly key: string;
+  readonly label: string;
+  /** A closed list where the language has one; otherwise a text box. */
+  readonly options?: () => readonly { readonly value: string; readonly text: string }[];
+  readonly placeholder?: string;
+  readonly initial?: string;
+  /** The keyword this box is, so the hint is the language's own words. */
+  readonly keyword?: string;
+}
+
+/**
+ * Everything the `+` can add, as data.
+ *
+ * A table rather than a chain of `if (kind === ...)`, which is what this was when it knew five kinds
+ * and would have been unreadable at thirteen. Adding a kind is now a row: what it is called, what it
+ * asks for, and which operation writes it.
+ *
+ * Every declaration the grammar accepts is here. That was the gap — a model built in this editor
+ * could have services and pipes and no types to put on them, because the Contract layer had no way
+ * in at all.
+ */
+interface Addable {
+  readonly kind: string;
+  /** What the dropdown shows. */
+  readonly text: string;
+  /** The language's own word, for the description above the form. */
+  readonly keyword: string;
+  /** `none` for the two header clauses, which are not named declarations. */
+  readonly names: "Pascal" | "lower" | "none";
+  readonly answers?: readonly Answer[];
+  /** `got` answers for a key, and answers "" for one nobody filled in. */
+  readonly build: (
+    where: Editable,
+    pkg: string,
+    name: string,
+    got: (key: string) => string,
+  ) => Mutation;
+}
+
+/** Declarations of one kind, as a picker's options. */
+const declsOf = (kind: Decl["kind"], from?: string): { value: string; text: string }[] =>
+  (model?.decls ?? [])
+    .filter((d) => d.kind === kind)
+    .map((d) => qualify(d.id))
+    .sort()
+    .map((q) => ({ value: from === undefined ? q : q, text: q }));
+
+const ADDABLE: readonly Addable[] = [
+  {
+    kind: "service",
+    text: "service",
+    keyword: "service",
+    names: "Pascal",
+    build: (w, pkg, name) => addService(w, { pkg, name }),
+  },
+  {
+    kind: "external",
+    text: "external service",
+    keyword: "service",
+    names: "Pascal",
+    build: (w, pkg, name) => addService(w, { pkg, name, external: true }),
+  },
+  {
+    kind: "queue",
+    text: "queue",
+    keyword: "queue",
+    names: "lower",
+    answers: [{ key: "retention", label: "retention", keyword: "retention", initial: "7d" }],
+    build: (w, pkg, name, got) => addPipe(w, { pkg, name, kind: "queue", retention: got("retention") }),
+  },
+  {
+    kind: "topic",
+    text: "topic",
+    keyword: "topic",
+    names: "lower",
+    answers: [{ key: "retention", label: "retention", keyword: "retention", initial: "7d" }],
+    build: (w, pkg, name, got) => addPipe(w, { pkg, name, kind: "topic", retention: got("retention") }),
+  },
+  {
+    kind: "stream",
+    text: "stream",
+    keyword: "stream",
+    names: "lower",
+    answers: [{ key: "retention", label: "retention", keyword: "retention", initial: "30d" }],
+    build: (w, pkg, name, got) => addPipe(w, { pkg, name, kind: "stream", retention: got("retention") }),
+  },
+  {
+    kind: "message",
+    text: "message",
+    keyword: "message",
+    names: "Pascal",
+    answers: [
+      { key: "version", label: "version", initial: "v1.0", placeholder: "v1.0" },
+      {
+        key: "intent",
+        label: "intent",
+        options: () => [
+          { value: "command", text: "command — an instruction to one handler" },
+          { value: "event", text: "event — a fact, for any number of observers" },
+          { value: "", text: "(unset)" },
+        ],
+        initial: "event",
+      },
+    ],
+    build: (w, pkg, name, got) =>
+      addMessage(w, {
+        pkg,
+        name,
+        version: got("version"),
+        ...(got("intent") === "" ? {} : { intent: got("intent") as "command" | "event" }),
+      }),
+  },
+  {
+    kind: "record",
+    text: "record",
+    keyword: "record",
+    names: "Pascal",
+    build: (w, pkg, name) => addRecord(w, { pkg, name }),
+  },
+  {
+    kind: "envelope",
+    text: "envelope",
+    keyword: "envelope",
+    names: "Pascal",
+    build: (w, pkg, name) => addEnvelope(w, { pkg, name }),
+  },
+  {
+    kind: "value",
+    text: "value",
+    keyword: "value",
+    names: "Pascal",
+    answers: [
+      {
+        key: "base",
+        label: "refines",
+        placeholder: "string",
+        initial: "string",
+        // The one thing a value cannot be written without: it is a refinement of exactly one scalar.
+        keyword: "value",
+      },
+    ],
+    build: (w, pkg, name, got) => addValue(w, { pkg, name, base: got("base") }),
+  },
+  {
+    kind: "enum",
+    text: "enum",
+    keyword: "enum",
+    names: "Pascal",
+    answers: [
+      { key: "members", label: "members", placeholder: "Open, Shipped", keyword: "enum" },
+    ],
+    build: (w, pkg, name, got) =>
+      addEnum(w, { pkg, name, members: got("members").split(",").map((m) => m.trim()) }),
+  },
+  {
+    kind: "label",
+    text: "label",
+    keyword: "label",
+    names: "lower",
+    build: (w, pkg, name) => addLabel(w, { pkg, name }),
+  },
+  {
+    kind: "saga",
+    text: "saga",
+    keyword: "saga",
+    names: "Pascal",
+    answers: [
+      {
+        key: "start",
+        label: "starts on",
+        keyword: "start",
+        options: () => declsOf("message"),
+      },
+    ],
+    build: (w, pkg, name, got) => addSaga(w, { pkg, name, start: got("start") }),
+  },
+  {
+    kind: "schedule",
+    text: "schedule",
+    keyword: "schedule",
+    names: "Pascal",
+    answers: [
+      { key: "cron", label: "every", keyword: "every", initial: "0 2 * * *", placeholder: "0 2 * * *" },
+      { key: "timezone", label: "in", initial: "Europe/Stockholm", placeholder: "Europe/Stockholm" },
+      { key: "message", label: "sends", keyword: "send", options: () => declsOf("message") },
+      {
+        key: "onMissed",
+        label: "onMissed",
+        keyword: "onMissed",
+        options: () => [
+          { value: "skip", text: "skip — a missed occurrence does not happen" },
+          { value: "once", text: "once — catch up with a single firing" },
+          { value: "all", text: "all — fire every occurrence it owes" },
+        ],
+        initial: "skip",
+      },
+    ],
+    build: (w, pkg, name, got) =>
+      addSchedule(w, {
+        pkg,
+        name,
+        cron: got("cron"),
+        timezone: got("timezone"),
+        message: got("message"),
+        onMissed: got("onMissed") as "skip" | "once" | "all",
+      }),
+  },
+  {
+    kind: "upcast",
+    text: "upcast",
+    keyword: "upcast",
+    names: "none",
+    answers: [
+      { key: "message", label: "message", options: () => declsOf("message") },
+      { key: "from", label: "from", initial: "v1.0", placeholder: "v1.0" },
+      { key: "to", label: "to", initial: "v1.1", placeholder: "v1.1" },
+    ],
+    build: (w, pkg, _name, got) =>
+      addUpcast(w, { pkg, message: got("message"), from: got("from"), to: got("to") }),
+  },
+  {
+    kind: "import",
+    text: "import",
+    keyword: "import",
+    names: "none",
+    answers: [
+      {
+        key: "target",
+        label: "package",
+        options: () =>
+          [...(model?.packages.values() ?? [])]
+            .filter((p) => p.declared)
+            .map((p) => ({ value: p.name, text: p.name }))
+            .sort((a, b) => a.value.localeCompare(b.value)),
+      },
+    ],
+    build: (w, pkg, _name, got) => addImport(w, { pkg, target: got("target") }),
+  },
+  {
+    kind: "envelopes",
+    text: "envelopes",
+    keyword: "envelopes",
+    names: "none",
+    answers: [{ key: "envelope", label: "carry", options: () => declsOf("envelope") }],
+    build: (w, pkg, _name, got) => addEnvelopes(w, { pkg, envelope: got("envelope") }),
+  },
+];
+
+/**
+ * The `+` panel, for any declaration the language has.
+ *
+ * Built from `ADDABLE` rather than from a chain of conditionals, and every box carries the
+ * language's own description of what it is — `describeKeyword` reads the table `completion.ts`
+ * already used for editor completions, so a tooltip here and a completion there cannot disagree
+ * about what `onMissed` means.
+ *
+ * Re-rendered in place, never replaced: redrawing the whole panel on a keystroke is what made the
+ * composer unusable, because the input under the cursor goes with it and the next letter is read as
+ * a shortcut. So the boxes are made once and only the preview below them is redrawn.
+ */
 function startAdd(): void {
   const kind = el<HTMLSelectElement>("addWhat").value;
   // A scenario is not a declaration in a package, so it takes its own flow from the same control.
@@ -3262,6 +3540,9 @@ function startAdd(): void {
     return;
   }
 
+  const what = ADDABLE.find((a) => a.kind === kind);
+  if (what === undefined) return;
+
   const packages = [...model.packages.values()]
     .filter((p) => p.declared && p.file !== undefined)
     .map((p) => p.name)
@@ -3274,51 +3555,86 @@ function startAdd(): void {
 
   // `an` before a vowel, and the dropdown's own words rather than its value: a heading reading
   // "add a external" is the kind of thing that makes a tool feel unfinished.
-  proposeWhat.textContent = kind === "external" ? "add an external service" : `add a ${kind}`;
+  proposeWhat.textContent = `add ${/^[aeiou]/.test(what.text) ? "an" : "a"} ${what.text}`;
 
   const form = document.createElement("div");
   form.id = "addForm";
 
+  // What this kind is, in the language's words, above the boxes. Somebody reaching for `envelopes`
+  // for the first time should not have to leave to find out what it does.
+  const about = document.createElement("div");
+  // Its own class, not `.why`: that one means "here is why this will not work", and a description of
+  // what a `schedule` is is not a refusal.
+  about.className = "about";
+  about.textContent = describeKeyword(what.keyword) ?? "";
+  if (about.textContent !== "") form.append(about);
+
   const name = document.createElement("input");
   name.type = "text";
-  // A pipe's name is a plain lowercase identifier and everything else is PascalCase (`10-grammar.md`),
-  // so the placeholder says which this one wants rather than leaving it to be guessed.
-  name.placeholder = kind === "service" || kind === "external" || kind === "saga" ? "Name" : "name";
+  // Addressable, because a form now has other boxes in it and "the input in the add form" stopped
+  // meaning one thing the moment a pipe started asking for its retention.
+  name.id = "addName";
+  // A pipe's name is a plain lowercase identifier and everything else is PascalCase
+  // (`10-grammar.md`), so the placeholder says which this one wants rather than leaving it to be
+  // guessed.
+  name.placeholder = what.names === "lower" ? "name" : "Name";
   name.autocomplete = "off";
+  name.hidden = what.names === "none";
 
   const pkg = document.createElement("select");
+  pkg.title = "the package this is written into — a package is one file";
   for (const option of packages) {
     const node = document.createElement("option");
     node.value = option;
     node.textContent = option;
     pkg.append(node);
   }
-
-  // A saga is the one kind here that cannot be written without a second answer: `start on M` is part
-  // of the declaration, not a later edit, because a saga keyed on nothing has no instances.
-  const start = document.createElement("select");
-  if (kind === "saga") {
-    const messages = model.decls
-      .filter((d) => d.kind === "message")
-      .map((d) => qualify(d.id))
-      .sort();
-    for (const name of messages) {
-      const node = document.createElement("option");
-      node.value = name;
-      node.textContent = name;
-      start.append(node);
-    }
-    start.title = "the message that starts an instance";
-  }
-  // The package of whatever is selected, when that is a sensible guess, because adding a pipe usually
-  // means adding it beside the thing you were just looking at.
+  // The package of whatever is selected, when that is a sensible guess, because adding a pipe
+  // usually means adding it beside the thing you were just looking at.
   const at = selection;
   const near =
     at.k === "declaration" ? model.decls.find((d) => idOf(d) === at.id)?.id.pkg : undefined;
   if (near !== undefined && packages.includes(near)) pkg.value = near;
 
-  form.append(name, pkg);
-  if (kind === "saga") form.append(start);
+  if (!name.hidden) form.append(name);
+  form.append(pkg);
+
+  /** The boxes this kind asks for, in order, each labelled and described. */
+  const boxes = new Map<string, HTMLInputElement | HTMLSelectElement>();
+  for (const answer of what.answers ?? []) {
+    const row = document.createElement("label");
+    row.className = "answer";
+    const caption = document.createElement("span");
+    caption.textContent = answer.label;
+
+    let box: HTMLInputElement | HTMLSelectElement;
+    const options = answer.options?.();
+    if (options !== undefined) {
+      const select = document.createElement("select");
+      for (const option of options) {
+        const node = document.createElement("option");
+        node.value = option.value;
+        node.textContent = option.text;
+        select.append(node);
+      }
+      box = select;
+    } else {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.autocomplete = "off";
+      if (answer.placeholder !== undefined) input.placeholder = answer.placeholder;
+      box = input;
+    }
+    if (answer.initial !== undefined) box.value = answer.initial;
+
+    // The language's own words, not a second sentence written here.
+    const hint = answer.keyword === undefined ? undefined : describeKeyword(answer.keyword);
+    if (hint !== undefined) row.title = hint;
+
+    row.append(caption, box);
+    form.append(row);
+    boxes.set(answer.key, box);
+  }
 
   const preview = document.createElement("div");
 
@@ -3326,36 +3642,37 @@ function startAdd(): void {
     preview.replaceChildren();
     const typed = name.value.trim();
     name.classList.remove("bad");
-    if (typed === "") {
+
+    if (what.names !== "none" && typed === "") {
       const why = document.createElement("div");
       why.className = "why";
-      why.textContent = `type a name for the ${kind}`;
+      why.textContent = `type a name for the ${what.text}`;
       preview.append(why);
       proposeState.textContent = "";
       proposeApply.hidden = true;
       proposal = undefined;
       return;
     }
-    const mutation =
-      kind === "service" || kind === "external"
-        ? addService(where, { pkg: pkg.value, name: typed, external: kind === "external" })
-        : kind === "saga"
-          ? addSaga(where, { pkg: pkg.value, name: typed, start: start.value })
-          : addPipe(where, { pkg: pkg.value, name: typed, kind: kind as "queue" | "topic" | "stream" });
 
+    const got = (key: string): string => boxes.get(key)?.value.trim() ?? "";
+
+    const mutation = what.build(where, pkg.value, typed, got);
     proposeWhat.textContent = mutation.describe;
     showMutation(mutation, preview);
-    name.classList.toggle("bad", mutation.edits.length === 0);
+    name.classList.toggle("bad", mutation.edits.length === 0 && what.names !== "none");
   };
 
   name.addEventListener("input", redraw);
   pkg.addEventListener("change", redraw);
-  start.addEventListener("change", redraw);
+  for (const box of boxes.values()) {
+    box.addEventListener(box instanceof HTMLSelectElement ? "change" : "input", redraw);
+  }
 
   proposeBody.replaceChildren(form, preview);
   redraw();
   propose.hidden = false;
-  name.focus();
+  if (name.hidden) [...boxes.values()][0]?.focus();
+  else name.focus();
 }
 
 /**

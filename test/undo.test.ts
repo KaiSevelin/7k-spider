@@ -81,8 +81,8 @@ const open = async (): Promise<Page> => {
 const addService = async (p: Page, name: string): Promise<void> => {
   await p.selectOption("#addWhat", "service");
   await p.click("#addNew");
-  await p.waitForSelector("#addForm input");
-  await p.locator("#addForm input").fill(name);
+  await p.waitForSelector("#addName");
+  await p.locator("#addName").fill(name);
   await p.waitForTimeout(250);
   await p.click("#proposeApply");
   await p.waitForTimeout(1500);
@@ -256,9 +256,9 @@ describe("the keys", () => {
 
     await p.selectOption("#addWhat", "service");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input").fill("Typing");
-    await p.locator("#addForm input").press("Control+z");
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").fill("Typing");
+    await p.locator("#addName").press("Control+z");
     await p.waitForTimeout(600);
 
     // The add is still there: the key went to the input, not to the history.

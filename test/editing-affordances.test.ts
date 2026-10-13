@@ -156,8 +156,8 @@ describe("adding while a lens is on", () => {
 
     await p.selectOption("#addWhat", "service");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input").fill("Later");
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").fill("Later");
     await p.waitForTimeout(250);
     await p.click("#proposeApply");
     await p.waitForTimeout(1500);
@@ -173,8 +173,8 @@ describe("adding while a lens is on", () => {
     const p = await open();
     await p.selectOption("#addWhat", "service");
     await p.click("#addNew");
-    await p.waitForSelector("#addForm input");
-    await p.locator("#addForm input").fill("Later");
+    await p.waitForSelector("#addName");
+    await p.locator("#addName").fill("Later");
     await p.waitForTimeout(250);
     await p.click("#proposeApply");
     await p.waitForTimeout(1500);

@@ -928,6 +928,39 @@
       #propose[hidden] { display: none; }
       #proposeBody { flex: 1; overflow: auto; padding: 10px 12px; }
 
+      /* What the kind is, in the language's own words, above the boxes. */
+      #addForm .about {
+        color: var(--ink-dim);
+        font-size: 12px;
+        margin-bottom: 8px;
+        line-height: 1.4;
+      }
+
+      /* A labelled box in the `+` panel: the caption, then the control. The whole row carries the
+         language's own description as its tooltip. */
+      .answer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+      .answer > span {
+        min-width: 7em;
+        color: var(--ink-dim);
+        font-size: 12px;
+      }
+      .answer input,
+      .answer select {
+        flex: 1;
+        font: inherit;
+        font-family: var(--mono);
+        color: var(--ink);
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        padding: 3px 6px;
+      }
+
       .panelFoot {
         display: flex;
         align-items: center;
@@ -1180,12 +1213,22 @@
         <button type="button" id="addNew" title="add one of these to the model">+</button>
         <select id="addWhat" title="what to add">
           <optgroup label="to the model">
-            <option value="service">service</option>
-            <option value="external" title="a service 7K describes but does not generate &mdash; mark what sends into your system this way, and the pipe it emits to becomes a boundary pipe">external service</option>
+            <option value="message">message</option>
+            <option value="record">record</option>
+            <option value="value">value</option>
+            <option value="enum">enum</option>
+            <option value="envelope">envelope</option>
+            <option value="upcast">upcast</option>
+            <option value="label">label</option>
             <option value="queue">queue</option>
             <option value="topic">topic</option>
             <option value="stream">stream</option>
+            <option value="service">service</option>
+            <option value="external" title="a service 7K describes but does not generate &mdash; mark what sends into your system this way, and the pipe it emits to becomes a boundary pipe">external service</option>
             <option value="saga">saga</option>
+            <option value="schedule">schedule</option>
+            <option value="import">import</option>
+            <option value="envelopes">envelopes</option>
           </optgroup>
           <optgroup label="to a scenario">
             <option value="scenario">scenario</option>
