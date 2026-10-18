@@ -23,7 +23,7 @@
 import { join } from "node:path";
 import { buildWorkspace, readJsonBody, type Diagnostic } from "@sevenk/core";
 import {
-  HOSTS,
+  hostsFileFor,
   readHosts,
   runScenario,
   startHosts,
@@ -147,7 +147,7 @@ export async function runOnce(
   }
 
   const said: string[] = [];
-  const hosts = await readHosts(join(root, ".7k", HOSTS));
+  const hosts = await readHosts(hostsFileFor(root));
   const wanted = request.live ?? [...hosts.hosts.keys()];
   const started = await startHosts(hosts, wanted, { log: (line) => said.push(line.trimEnd()) });
 
